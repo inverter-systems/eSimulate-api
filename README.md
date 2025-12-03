@@ -1,2 +1,389 @@
-# eSimulate-api
-API para o sistema eSimulate
+# eSimulate API
+
+API RESTful desenvolvida em Go (Golang) para o sistema eSimulate - plataforma de simulados e provas online com suporte a acesso público e B2B.
+
+## 📋 Índice
+
+- [Sobre o Projeto](#sobre-o-projeto)
+- [Tecnologias](#tecnologias)
+- [Arquitetura](#arquitetura)
+- [Requisitos](#requisitos)
+- [Instalação](#instalação)
+- [Configuração](#configuração)
+- [Estrutura do Projeto](#estrutura-do-projeto)
+- [Endpoints da API](#endpoints-da-api)
+- [Banco de Dados](#banco-de-dados)
+- [Conformidade LGPD](#conformidade-lgpd)
+- [Desenvolvimento](#desenvolvimento)
+- [Documentação Adicional](#documentação-adicional)
+
+## 🎯 Sobre o Projeto
+
+O eSimulate é uma plataforma completa para criação, gerenciamento e execução de simulados e provas online. A API oferece:
+
+- ✅ Autenticação e autorização com JWT
+- ✅ Gerenciamento de usuários (admin, user, company)
+- ✅ Criação e gerenciamento de exames
+- ✅ Banco de questões reutilizáveis
+- ✅ Sistema de resultados e estatísticas
+- ✅ Links públicos para acesso externo (B2B)
+- ✅ Conformidade com LGPD
+- ✅ API RESTful completa
+
+## 🛠 Tecnologias
+
+- **Linguagem:** Go 1.22+
+- **Banco de Dados:** PostgreSQL 12+
+- **Autenticação:** JWT (JSON Web Tokens) - HMAC SHA256
+- **Segurança:** BCrypt para hash de senhas
+- **HTTP Router:** Go 1.22 `net/http` mux (padrão)
+- **Dependências Principais:**
+  - `github.com/golang-jwt/jwt/v5` - JWT
+  - `github.com/lib/pq` - Driver PostgreSQL
+  - `golang.org/x/crypto` - BCrypt
+  - `github.com/joho/godotenv` - Variáveis de ambiente
+
+## 🏗 Arquitetura
+
+O projeto segue os princípios da **Clean Architecture** para garantir desacoplamento e testabilidade:
+
+```
+cmd/api/              # Ponto de entrada da aplicação
+internal/
+  ├── config/         # Configurações e variáveis de ambiente
+  ├── domain/         # Entidades e interfaces (camada de domínio)
+  ├── repository/     # Implementação de persistência (PostgreSQL)
+  ├── service/        # Lógica de negócio
+  └── delivery/       # Handlers HTTP e middlewares
+```
+
+### Camadas
+
+- **Domain**: Entidades e interfaces puras (sem dependências externas)
+- **Repository**: Implementação de persistência usando Repository Pattern
+- **Service**: Lógica de negócio e regras de aplicação
+- **Delivery**: Camada de transporte HTTP (handlers, middlewares, rotas)
+
+## 📦 Requisitos
+
+- Go 1.22 ou superior
+- PostgreSQL 12 ou superior
+- Make (opcional, para comandos auxiliares)
+
+## 🚀 Instalação
+
+### 1. Clone o repositório
+
+```bash
+git clone <repository-url>
+cd eSimulate-api
+```
+
+### 2. Instale as dependências
+
+```bash
+go mod download
+```
+
+### 3. Configure o banco de dados
+
+Crie um banco de dados PostgreSQL:
+
+```sql
+CREATE DATABASE esimulate;
+```
+
+### 4. Configure as variáveis de ambiente
+
+Crie um arquivo `.env` na raiz do projeto:
+
+```env
+PORT=8080
+DATABASE_URL=postgres://usuario:senha@localhost:5432/esimulate?sslmode=disable
+JWT_SECRET=seu_secret_jwt_super_seguro_aqui
+```
+
+### 5. Execute o schema do banco
+
+```bash
+psql -U usuario -d esimulate -f internal/database/schema.sql
+```
+
+Ou use o arquivo em `migrations/schema.sql`:
+
+```bash
+psql -U usuario -d esimulate -f migrations/schema.sql
+```
+
+### 6. Execute a aplicação
+
+```bash
+go run ./cmd/api/main.go
+```
+
+A API estará disponível em `http://localhost:8080`
+
+## ⚙️ Configuração
+
+### Variáveis de Ambiente
+
+| Variável | Descrição | Padrão |
+|----------|-----------|--------|
+| `PORT` | Porta do servidor HTTP | `8080` |
+| `DATABASE_URL` | String de conexão PostgreSQL | `postgres://postgres:postgres@localhost:5432/esimulate?sslmode=disable` |
+| `JWT_SECRET` | Chave secreta para assinatura JWT | `change_this_secret_in_production_please` |
+
+⚠️ **Importante:** Altere o `JWT_SECRET` em produção para um valor seguro e aleatório.
+
+## 📁 Estrutura do Projeto
+
+```
+eSimulate-api/
+├── cmd/
+│   └── api/
+│       └── main.go              # Ponto de entrada
+├── internal/
+│   ├── config/
+│   │   └── config.go            # Configurações
+│   ├── domain/
+│   │   ├── entity.go            # Entidades do domínio
+│   │   └── repository.go        # Interfaces de repositório
+│   ├── repository/
+│   │   └── postgres/
+│   │       └── repository.go    # Implementação PostgreSQL
+│   ├── service/
+│   │   └── service.go           # Lógica de negócio
+│   ├── delivery/
+│   │   └── http/
+│   │       ├── handler.go       # Handlers HTTP
+│   │       └── middleware.go    # Middlewares (CORS, Auth)
+│   └── database/
+│       └── schema.sql           # Schema do banco de dados
+├── migrations/
+│   └── schema.sql               # Schema para migrações
+├── go.mod                        # Dependências Go
+├── go.sum                        # Checksums das dependências
+└── README.md                     # Este arquivo
+```
+
+## 🔌 Endpoints da API
+
+### Autenticação
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| POST | `/api/auth/register` | Registrar novo usuário | ❌ |
+| POST | `/api/auth/login` | Login e obter token JWT | ❌ |
+| POST | `/api/auth/forgot-password` | Solicitar recuperação de senha | ❌ |
+| POST | `/api/auth/reset-password` | Redefinir senha | ❌ |
+| POST | `/api/auth/verify-email` | Verificar email | ❌ |
+
+### Exames
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| GET | `/api/exams` | Listar exames | ✅ |
+| GET | `/api/exams/{id}` | Obter exame por ID | ✅ |
+| POST | `/api/exams` | Criar novo exame | ✅ |
+| DELETE | `/api/exams/{id}` | Deletar exame | ✅ |
+
+### Questões
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| GET | `/api/questions` | Listar questões | ✅ |
+| POST | `/api/questions` | Criar questão | ✅ |
+| POST | `/api/questions/batch` | Criar múltiplas questões | ✅ |
+| DELETE | `/api/questions/{id}` | Deletar questão | ✅ |
+
+### Resultados
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| GET | `/api/results` | Obter meus resultados | ✅ |
+| POST | `/api/results` | Salvar resultado | ✅ |
+
+### Usuários (Admin)
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| GET | `/api/users` | Listar usuários | ✅ |
+| DELETE | `/api/users/{id}` | Deletar usuário | ✅ |
+| POST | `/api/users/update` | Atualizar usuário | ✅ |
+
+### Matérias e Tópicos
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| GET | `/api/subjects` | Listar matérias | ❌ |
+| POST | `/api/subjects` | Criar matéria | ✅ |
+| DELETE | `/api/subjects/{id}` | Deletar matéria | ✅ |
+| GET | `/api/topics` | Listar tópicos | ❌ |
+| POST | `/api/topics` | Criar tópico | ✅ |
+| DELETE | `/api/topics/{id}` | Deletar tópico | ✅ |
+
+### Empresa (B2B)
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| GET | `/api/company/links` | Listar links públicos | ✅ |
+| POST | `/api/company/links` | Criar link público | ✅ |
+| GET | `/api/company/results` | Obter resultados da empresa | ✅ |
+
+### Acesso Público
+
+| Método | Endpoint | Descrição | Autenticação |
+|--------|----------|-----------|--------------|
+| GET | `/api/public/exam/{token}` | Obter exame via token público | ❌ |
+| POST | `/api/public/exam/{token}/submit` | Submeter resultado público | ❌ |
+
+### Autenticação
+
+Para endpoints protegidos, inclua o header:
+
+```
+Authorization: Bearer <seu_token_jwt>
+```
+
+## 🗄 Banco de Dados
+
+### Schema
+
+O banco de dados utiliza PostgreSQL com:
+
+- ✅ Normalização adequada
+- ✅ Foreign Keys para integridade referencial
+- ✅ Índices otimizados para performance
+- ✅ UUIDs v4 como chaves primárias
+- ✅ JSONB para dados flexíveis
+- ✅ Triggers para atualização automática
+- ✅ Constraints para validação
+
+### Tabelas Principais
+
+- `users` - Usuários do sistema
+- `subjects` - Matérias/disciplinas
+- `topics` - Tópicos dentro de matérias
+- `questions` - Banco de questões
+- `exams` - Simulados/provas
+- `exam_subjects` - Relacionamento exames-matérias
+- `results` - Resultados de execução
+- `public_links` - Links públicos para acesso externo
+
+### Migração
+
+O schema está disponível em:
+- `internal/database/schema.sql` - Schema completo
+- `migrations/schema.sql` - Schema para migrações
+
+Para aplicar o schema:
+
+```bash
+psql -U usuario -d esimulate -f internal/database/schema.sql
+```
+
+## 🔒 Conformidade LGPD
+
+O sistema foi desenvolvido com foco em conformidade com a Lei Geral de Proteção de Dados (LGPD):
+
+### Direito ao Esquecimento (Art. 18)
+
+- Todas as tabelas relacionadas possuem `ON DELETE CASCADE`
+- Ao deletar um usuário, todos os dados relacionados são removidos automaticamente
+- Histórico, logs e provas criadas pelo usuário são eliminados
+
+### Minimização de Dados
+
+- Apenas dados estritamente necessários são armazenados
+- Senhas são armazenadas como hash (BCrypt)
+- `password_hash` nunca é exposto em respostas JSON
+
+### Segurança
+
+- Autenticação via JWT
+- Senhas hasheadas com BCrypt
+- CORS configurado
+- Validação de dados
+
+## 💻 Desenvolvimento
+
+### Executar em modo desenvolvimento
+
+```bash
+go run ./cmd/api/main.go
+```
+
+### Compilar
+
+```bash
+go build -o bin/api ./cmd/api/main.go
+```
+
+### Executar binário compilado
+
+```bash
+./bin/api
+```
+
+### Testes
+
+```bash
+go test ./...
+```
+
+### Formatação
+
+```bash
+go fmt ./...
+```
+
+### Linting
+
+```bash
+golangci-lint run
+```
+
+### Boas Práticas
+
+Ao modificar o código:
+
+1. ✅ Mantenha a lógica de negócio fora dos Handlers HTTP
+2. ✅ Use injeção de dependência via structs
+3. ✅ Sempre verifique erros explicitamente
+4. ✅ Nunca exponha `password_hash` em respostas JSON
+5. ✅ Siga a Clean Architecture
+6. ✅ Documente funções públicas
+
+## 📚 Documentação Adicional
+
+- [REQUIREMENTS.md](./REQUIREMENTS.md) - **Especificação de requisitos e regras de negócio**
+- [BACKEND_SPEC.md](./BACKEND_SPEC.md) - Especificação técnica detalhada
+- [DATABASE_ANALYSIS.md](./DATABASE_ANALYSIS.md) - Análise e otimização do banco de dados
+- [DATABASE_SUMMARY.md](./DATABASE_SUMMARY.md) - Resumo das melhorias do banco
+- [MIGRATION_SUBJECT_TOPIC.md](./MIGRATION_SUBJECT_TOPIC.md) - Migração para subject_id/topic_id
+
+## 🤝 Contribuindo
+
+1. Faça um fork do projeto
+2. Crie uma branch para sua feature (`git checkout -b feature/AmazingFeature`)
+3. Commit suas mudanças (`git commit -m 'Add some AmazingFeature'`)
+4. Push para a branch (`git push origin feature/AmazingFeature`)
+5. Abra um Pull Request
+
+## 📝 Licença
+
+Este projeto está sob a licença especificada no arquivo [LICENSE](./LICENSE).
+
+## 👥 Autores
+
+- Equipe de Desenvolvimento eSimulate
+
+## 🙏 Agradecimentos
+
+- Comunidade Go
+- PostgreSQL
+- Todos os mantenedores das bibliotecas utilizadas
+
+---
+
+**Desenvolvido com ❤️ usando Go**
