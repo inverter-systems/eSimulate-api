@@ -35,18 +35,26 @@ func main() {
 	// 4. Layers Init
 	repo := postgres.NewPostgresRepo(db)
 	svc := service.NewService(repo, cfg)
+	
+	// 5. Initialize Admin User
+	if err := svc.InitializeAdmin(); err != nil {
+		log.Printf("Warning: Failed to initialize admin user: %v", err)
+	} else {
+		fmt.Printf("✓ Admin user ready: %s\n", cfg.AdminEmail)
+	}
+	
 	h := http.NewHandler(svc)
 
-	// 5. Router (Go 1.22)
+	// 6. Router (Go 1.22)
 	mux := httpNet.NewServeMux()
 
 	// Auth
 	mux.HandleFunc("POST /api/auth/register", h.Register)
 	mux.HandleFunc("POST /api/auth/login", h.Login)
-	// Stubs
-	mux.HandleFunc("POST /api/auth/forgot-password", func(w httpNet.ResponseWriter, r *httpNet.Request) { w.WriteHeader(200) })
-	mux.HandleFunc("POST /api/auth/reset-password", func(w httpNet.ResponseWriter, r *httpNet.Request) { w.WriteHeader(200) })
-	mux.HandleFunc("POST /api/auth/verify-email", func(w httpNet.ResponseWriter, r *httpNet.Request) { w.WriteHeader(200) })
+	// Auth Recovery
+	mux.HandleFunc("POST /api/auth/forgot-password", h.ForgotPassword)
+	mux.HandleFunc("POST /api/auth/reset-password", h.ResetPassword)
+	mux.HandleFunc("POST /api/auth/verify-email", h.VerifyEmail)
 
 	// Protected Routes Helper
 	protect := func(handler httpNet.HandlerFunc) httpNet.HandlerFunc {

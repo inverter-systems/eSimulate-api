@@ -84,8 +84,10 @@ CREATE TABLE IF NOT EXISTS exams (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     title TEXT NOT NULL,
     description TEXT,
-    questions JSONB NOT NULL,
+    -- Campo questions JSONB removido - usando apenas tabela exam_questions
     subjects JSONB,
+    time_limit INT,
+    is_public BOOLEAN DEFAULT FALSE,
     created_by UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -95,20 +97,20 @@ CREATE TABLE IF NOT EXISTS exams (
 CREATE INDEX IF NOT EXISTS idx_exams_created_by ON exams(created_by);
 CREATE INDEX IF NOT EXISTS idx_exams_created_at ON exams(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_exams_is_active ON exams(is_active);
-CREATE INDEX IF NOT EXISTS idx_exams_questions_gin ON exams USING GIN(questions);
+-- Índice GIN para questions removido (campo removido - usando exam_questions)
 CREATE INDEX IF NOT EXISTS idx_exams_subjects_gin ON exams USING GIN(subjects);
 
 -- ============================================
--- 6. TABELA DE RELACIONAMENTO EXAM-SUBJECTS
+-- 6. TABELA DE RELACIONAMENTO EXAM-QUESTIONS (N:N)
 -- ============================================
-CREATE TABLE IF NOT EXISTS exam_subjects (
+CREATE TABLE IF NOT EXISTS exam_questions (
     exam_id UUID NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-    subject_id UUID NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    PRIMARY KEY (exam_id, subject_id)
+    question_id UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+    PRIMARY KEY (exam_id, question_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_exam_subjects_exam_id ON exam_subjects(exam_id);
-CREATE INDEX IF NOT EXISTS idx_exam_subjects_subject_id ON exam_subjects(subject_id);
+CREATE INDEX IF NOT EXISTS idx_exam_questions_exam_id ON exam_questions(exam_id);
+CREATE INDEX IF NOT EXISTS idx_exam_questions_question_id ON exam_questions(question_id);
 
 -- ============================================
 -- 7. TABELA DE RESULTADOS (RESULTS)
@@ -203,8 +205,7 @@ COMMENT ON TABLE users IS 'Usuários do sistema com diferentes roles (admin, use
 COMMENT ON TABLE subjects IS 'Matérias/disciplinas disponíveis no sistema';
 COMMENT ON TABLE topics IS 'Tópicos específicos dentro de cada matéria';
 COMMENT ON TABLE questions IS 'Banco de questões reutilizáveis que podem ser usadas em múltiplos exames';
-COMMENT ON TABLE exams IS 'Simulados/provas criados pelos usuários com snapshot imutável das questões';
-COMMENT ON TABLE exam_subjects IS 'Relacionamento many-to-many normalizado entre exames e matérias';
+COMMENT ON TABLE exams IS 'Simulados/provas criados pelos usuários com relacionamento N:N para questões via exam_questions';
 COMMENT ON TABLE results IS 'Resultados de execução de exames com suporte a candidatos públicos e usuários autenticados';
 COMMENT ON TABLE public_links IS 'Links públicos gerados por empresas para acesso externo a exames (B2B)';
 
@@ -212,7 +213,6 @@ COMMENT ON COLUMN users.profile IS 'Dados adicionais do perfil em formato JSONB 
 COMMENT ON COLUMN users.role IS 'Papel do usuário no sistema: admin (administrador), user (usuário comum), company (empresa)';
 COMMENT ON COLUMN questions.options IS 'Array JSONB de strings com as opções de resposta da questão';
 COMMENT ON COLUMN questions.correct_index IS 'Índice baseado em zero da opção correta no array options';
-COMMENT ON COLUMN exams.questions IS 'Snapshot JSONB das questões no momento da criação do exame, mantendo histórico imutável';
 COMMENT ON COLUMN exams.subjects IS 'Array JSONB de nomes de matérias, mantido para performance e compatibilidade';
 COMMENT ON COLUMN results.answers IS 'Array JSONB de objetos com as respostas: [{questionId, selectedIndex, isCorrect}]';
 COMMENT ON COLUMN results.user_id IS 'ID do usuário autenticado ou NULL para candidatos públicos que acessaram via link';

@@ -95,13 +95,47 @@ CREATE DATABASE esimulate;
 
 ### 4. Configure as variáveis de ambiente
 
-Crie um arquivo `.env` na raiz do projeto:
+O sistema procura as variáveis de ambiente na seguinte ordem:
+
+1. **Arquivo `.env` na raiz do projeto** (recomendado para desenvolvimento)
+2. **Variáveis de ambiente do sistema operacional** (usado em produção)
+
+#### Opção 1: Usando arquivo `.env` (Desenvolvimento)
+
+Crie um arquivo `.env` na raiz do projeto (veja `env.example` como referência):
+
+```bash
+cp env.example .env
+```
+
+Edite o arquivo `.env` com seus valores:
 
 ```env
 PORT=8080
 DATABASE_URL=postgres://usuario:senha@localhost:5432/esimulate?sslmode=disable
 JWT_SECRET=seu_secret_jwt_super_seguro_aqui
 ```
+
+#### Opção 2: Variáveis de ambiente do sistema (Produção)
+
+Configure as variáveis diretamente no sistema operacional:
+
+```bash
+export PORT=8080
+export DATABASE_URL=postgres://usuario:senha@localhost:5432/esimulate?sslmode=disable
+export JWT_SECRET=seu_secret_jwt_super_seguro_aqui
+```
+
+**Nota:** Se uma variável não for encontrada, o sistema usará valores padrão e exibirá um aviso no log.
+
+#### Variáveis de Admin Inicial
+
+O sistema cria automaticamente um usuário admin na primeira inicialização:
+
+- `ADMIN_EMAIL`: Email do admin (padrão: `admin@esimulate.com`)
+- `ADMIN_PASSWORD`: Senha do admin (padrão: `admin123`)
+
+**IMPORTANTE:** Altere essas credenciais em produção!
 
 ### 5. Execute o schema do banco
 

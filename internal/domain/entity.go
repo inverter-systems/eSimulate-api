@@ -20,7 +20,8 @@ type User struct {
 	CreatedAt           int64  `json:"createdAt"`
 	IsVerified          bool   `json:"isVerified"`
 	OnboardingCompleted bool   `json:"onboardingCompleted,omitempty"` // Flag para fluxo pós-verificação
-	Profile             any    `json:"profile,omitempty"`             // JSONB flexível (UserProfile)
+	Profile             any    `json:"profile,omitempty"`             // JSONB flexível (UserProfile: taxId, companyName, etc)
+	Preferences         any    `json:"preferences,omitempty"`         // Preferências do usuário (llmProvider, llmApiKey, theme, language)
 	Token               string `json:"token,omitempty"`               // Usado apenas na resposta de login
 }
 
@@ -31,6 +32,8 @@ type Exam struct {
 	Description string     `json:"description"`
 	Questions   []Question `json:"questions"`
 	Subjects    []string   `json:"subjects"`
+	TimeLimit   int        `json:"timeLimit,omitempty"` // Tempo limite em minutos (opcional)
+	IsPublic    bool       `json:"isPublic,omitempty"`   // Indica se o exame é público
 	CreatedBy   string     `json:"createdBy,omitempty"`
 	CreatedAt   int64      `json:"createdAt"`
 }

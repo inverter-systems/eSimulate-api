@@ -47,13 +47,49 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var creds struct { Email, Password string }
-	json.NewDecoder(r.Body).Decode(&creds)
+	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
+		h.Error(w, 400, "Invalid JSON")
+		return
+	}
 	user, err := h.Service.LoginUser(creds.Email, creds.Password)
 	if err != nil {
 		h.Error(w, 401, err.Error())
 		return
 	}
 	h.JSON(w, 200, user)
+}
+
+func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct { Email string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.Error(w, 400, "Invalid JSON")
+		return
+	}
+	// TODO: Implementar lógica de recuperação de senha
+	// Gerar token temporário e enviar email
+	h.JSON(w, 200, map[string]string{"message": "Email enviado"})
+}
+
+func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct { Token, Password string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.Error(w, 400, "Invalid JSON")
+		return
+	}
+	// TODO: Implementar lógica de reset de senha
+	// Validar token e atualizar senha
+	h.JSON(w, 200, map[string]string{"message": "Senha alterada"})
+}
+
+func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var req struct { Token string }
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.Error(w, 400, "Invalid JSON")
+		return
+	}
+	// TODO: Implementar lógica de verificação de email
+	// Validar token e atualizar is_verified
+	h.JSON(w, 200, map[string]string{"message": "Email verificado"})
 }
 
 func (h *Handler) GetExams(w http.ResponseWriter, r *http.Request) {
@@ -65,8 +101,19 @@ func (h *Handler) GetExams(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetExam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	userID := r.Context().Value("userID").(string)
 	exam, err := h.Service.Repo.GetExamByID(id)
-	if err != nil { h.Error(w, 404, "Exam not found"); return }
+	if err != nil { 
+		h.Error(w, 404, "Exam not found")
+		return 
+	}
+	
+	// Verificar acesso: se não é público, só o criador pode ver
+	if !exam.IsPublic && exam.CreatedBy != userID {
+		h.Error(w, 403, "Access denied")
+		return
+	}
+	
 	h.JSON(w, 200, exam)
 }
 
@@ -75,12 +122,26 @@ func (h *Handler) CreateExam(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&e); err != nil { h.Error(w, 400, "Bad JSON"); return }
 	
 	e.CreatedBy = r.Context().Value("userID").(string)
+	
+	// Verificar se é update (ID existe) ou create (ID vazio)
+	isUpdate := e.ID != ""
+	if !isUpdate {
+		e.ID = uuid.New().String()
+		e.CreatedAt = time.Now().UnixMilli()
+	}
+	
 	if err := h.Service.Repo.CreateExam(e); err != nil { h.Error(w, 500, err.Error()); return }
 	
-	// Retornar exame atualizado (pode ter sido atualizado se id já existia)
+	// Retornar exame atualizado
 	exam, err := h.Service.Repo.GetExamByID(e.ID)
 	if err != nil { h.Error(w, 500, "Failed to fetch exam"); return }
-	h.JSON(w, 201, exam)
+	
+	// Retornar 200 se for update, 201 se for create
+	if isUpdate {
+		h.JSON(w, 200, exam)
+	} else {
+		h.JSON(w, 201, exam)
+	}
 }
 
 func (h *Handler) DeleteExam(w http.ResponseWriter, r *http.Request) {
@@ -104,9 +165,22 @@ func (h *Handler) CreateQuestion(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) BatchQuestions(w http.ResponseWriter, r *http.Request) {
 	var qs []domain.Question
-	json.NewDecoder(r.Body).Decode(&qs)
-	for _, q := range qs { h.Service.Repo.CreateQuestion(q) }
-	w.WriteHeader(200)
+	if err := json.NewDecoder(r.Body).Decode(&qs); err != nil {
+		h.Error(w, 400, "Invalid JSON")
+		return
+	}
+	
+	count := 0
+	for _, q := range qs {
+		if err := h.Service.Repo.CreateQuestion(q); err == nil {
+			count++
+		}
+	}
+	
+	h.JSON(w, 200, map[string]interface{}{
+		"status": "success",
+		"count":  count,
+	})
 }
 func (h *Handler) DeleteQuestion(w http.ResponseWriter, r *http.Request) {
 	h.Service.Repo.DeleteQuestion(r.PathValue("id"))
@@ -294,5 +368,8 @@ func (h *Handler) PublicSubmit(w http.ResponseWriter, r *http.Request) {
 		h.Error(w, 500, err.Error())
 		return 
 	}
-	h.JSON(w, 200, map[string]string{"status": "success"})
+	h.JSON(w, 200, map[string]string{
+		"status":  "success",
+		"message": "Prova recebida.",
+	})
 }

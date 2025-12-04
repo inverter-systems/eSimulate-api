@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"esimulate-backend/internal/domain"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,13 +23,19 @@ func NewPostgresRepo(db *sql.DB) *PostgresRepo {
 // --- User Implementation ---
 
 func (r *PostgresRepo) CreateUser(u domain.User) (domain.User, error) {
-	if u.ID == "" { u.ID = uuid.New().String() }
-	if u.CreatedAt == 0 { u.CreatedAt = time.Now().UnixMilli() }
-	
+	if u.ID == "" {
+		u.ID = uuid.New().String()
+	}
+	if u.CreatedAt == 0 {
+		u.CreatedAt = time.Now().UnixMilli()
+	}
+
+	createdAtTime := time.UnixMilli(u.CreatedAt)
+
 	query := `INSERT INTO users (id, name, email, password_hash, role, provider, created_at, is_verified, onboarding_completed) 
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`
-	
-	err := r.DB.QueryRow(query, u.ID, u.Name, u.Email, u.Password, u.Role, u.Provider, u.CreatedAt, u.IsVerified, u.OnboardingCompleted).Scan(&u.ID)
+
+	err := r.DB.QueryRow(query, u.ID, u.Name, u.Email, u.Password, u.Role, u.Provider, createdAtTime, u.IsVerified, u.OnboardingCompleted).Scan(&u.ID)
 	u.Password = "" 
 	return u, err
 }
@@ -36,9 +43,11 @@ func (r *PostgresRepo) CreateUser(u domain.User) (domain.User, error) {
 func (r *PostgresRepo) GetUserByEmail(email string) (domain.User, error) {
 	var u domain.User
 	var profileData []byte
+	var createdAt time.Time
 	query := `SELECT id, name, email, password_hash, role, provider, created_at, profile, is_verified, onboarding_completed FROM users WHERE email=$1`
-	err := r.DB.QueryRow(query, email).Scan(&u.ID, &u.Name, &u.Email, &u.Password, &u.Role, &u.Provider, &u.CreatedAt, &profileData, &u.IsVerified, &u.OnboardingCompleted)
+	err := r.DB.QueryRow(query, email).Scan(&u.ID, &u.Name, &u.Email, &u.Password, &u.Role, &u.Provider, &createdAt, &profileData, &u.IsVerified, &u.OnboardingCompleted)
 	if err != nil { return u, err }
+	u.CreatedAt = createdAt.UnixMilli()
 	if len(profileData) > 0 { json.Unmarshal(profileData, &u.Profile) }
 	return u, nil
 }
@@ -46,10 +55,23 @@ func (r *PostgresRepo) GetUserByEmail(email string) (domain.User, error) {
 func (r *PostgresRepo) GetUserByID(id string) (domain.User, error) {
 	var u domain.User
 	var profileData []byte
+	var createdAt time.Time
 	query := `SELECT id, name, email, password_hash, role, provider, created_at, profile, is_verified, onboarding_completed FROM users WHERE id=$1`
-	err := r.DB.QueryRow(query, id).Scan(&u.ID, &u.Name, &u.Email, &u.Password, &u.Role, &u.Provider, &u.CreatedAt, &profileData, &u.IsVerified, &u.OnboardingCompleted)
+	err := r.DB.QueryRow(query, id).Scan(&u.ID, &u.Name, &u.Email, &u.Password, &u.Role, &u.Provider, &createdAt, &profileData, &u.IsVerified, &u.OnboardingCompleted)
 	if err != nil { return u, err }
-	if len(profileData) > 0 { json.Unmarshal(profileData, &u.Profile) }
+	u.CreatedAt = createdAt.UnixMilli()
+	if len(profileData) > 0 {
+		json.Unmarshal(profileData, &u.Profile)
+		// Extrair preferences do profile se existir
+		if profileMap, ok := u.Profile.(map[string]interface{}); ok {
+			if preferences, exists := profileMap["preferences"]; exists {
+				u.Preferences = preferences
+				// Remover preferences do profile para evitar duplicação
+				delete(profileMap, "preferences")
+				u.Profile = profileMap
+			}
+		}
+	}
 	u.Password = "" // Não retornar senha
 	return u, nil
 }
@@ -62,8 +84,21 @@ func (r *PostgresRepo) GetAllUsers() ([]domain.User, error) {
 	for rows.Next() {
 		var u domain.User
 		var p []byte
-		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.CreatedAt, &p, &u.IsVerified, &u.OnboardingCompleted); err == nil {
-			if len(p) > 0 { json.Unmarshal(p, &u.Profile) }
+		var createdAt time.Time
+		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.Role, &createdAt, &p, &u.IsVerified, &u.OnboardingCompleted); err == nil {
+			u.CreatedAt = createdAt.UnixMilli()
+			if len(p) > 0 {
+				json.Unmarshal(p, &u.Profile)
+				// Extrair preferences do profile se existir
+				if profileMap, ok := u.Profile.(map[string]interface{}); ok {
+					if preferences, exists := profileMap["preferences"]; exists {
+						u.Preferences = preferences
+						// Remover preferences do profile para evitar duplicação
+						delete(profileMap, "preferences")
+						u.Profile = profileMap
+					}
+				}
+			}
 			users = append(users, u)
 		}
 	}
@@ -123,62 +158,303 @@ func (r *PostgresRepo) DeleteUser(id string) error {
 // --- Exam Implementation ---
 
 func (r *PostgresRepo) CreateExam(e domain.Exam) error {
-	qJSON, _ := json.Marshal(e.Questions)
+	// Iniciar transação
+	tx, err := r.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	
+	// Preparar dados
 	sJSON, _ := json.Marshal(e.Subjects)
-	query := `INSERT INTO exams (id, title, description, questions, subjects, created_by, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	if e.CreatedAt == 0 {
+		e.CreatedAt = time.Now().UnixMilli()
+	}
+	createdAtTime := time.UnixMilli(e.CreatedAt)
+	
+	// 1. Criar/Atualizar exame (sem campo questions JSONB - usando apenas exam_questions)
+	query := `INSERT INTO exams (id, title, description, subjects, time_limit, is_public, created_by, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET 
 			title=$2, 
 			description=$3, 
-			questions=$4, 
-			subjects=$5,
+			subjects=$4,
+			time_limit=$5,
+			is_public=$6,
 			updated_at=NOW()`
-	_, err := r.DB.Exec(query, e.ID, e.Title, e.Description, qJSON, sJSON, e.CreatedBy, e.CreatedAt)
-	return err
+	_, err = tx.Exec(query, e.ID, e.Title, e.Description, sJSON, e.TimeLimit, e.IsPublic, e.CreatedBy, createdAtTime)
+	if err != nil {
+		return err
+	}
+	
+	// 2. Remover relacionamentos antigos (se for update)
+	_, err = tx.Exec("DELETE FROM exam_questions WHERE exam_id=$1", e.ID)
+	if err != nil {
+		return err
+	}
+	
+	// 3. Para cada questão: fazer upsert na tabela questions e criar relacionamento
+	for _, q := range e.Questions {
+		// Gerar ID se não existir
+		if q.ID == "" {
+			q.ID = uuid.New().String()
+		}
+		
+		// Upsert questão
+		optJSON, _ := json.Marshal(q.Options)
+		var subjectID, topicID sql.NullString
+		if q.SubjectID != "" {
+			subjectID.String = q.SubjectID
+			subjectID.Valid = true
+		}
+		if q.TopicID != "" {
+			topicID.String = q.TopicID
+			topicID.Valid = true
+		}
+		
+		upsertQuery := `INSERT INTO questions (id, text, options, correct_index, explanation, subject_id, topic_id, is_public)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (id) DO UPDATE SET 
+				text=$2, 
+				options=$3, 
+				correct_index=$4, 
+				explanation=$5, 
+				subject_id=$6, 
+				topic_id=$7,
+				is_public=$8,
+				updated_at=NOW()`
+		_, err = tx.Exec(upsertQuery, q.ID, q.Text, optJSON, q.CorrectIndex, q.Explanation, subjectID, topicID, q.IsPublic)
+		if err != nil {
+			return err
+		}
+		
+		// Criar relacionamento exam_questions
+		_, err = tx.Exec("INSERT INTO exam_questions (exam_id, question_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", e.ID, q.ID)
+		if err != nil {
+			return err
+		}
+	}
+	
+	// Commit transação
+	return tx.Commit()
 }
 
 func (r *PostgresRepo) GetExams() ([]domain.Exam, error) {
-	rows, err := r.DB.Query("SELECT id, title, description, questions, subjects, created_at FROM exams ORDER BY created_at DESC")
+	// Buscar exames (sem questions - usando apenas exam_questions)
+	rows, err := r.DB.Query(`
+		SELECT id, title, description, subjects, time_limit, is_public, created_by, created_at 
+		FROM exams 
+		ORDER BY created_at DESC`)
 	if err != nil { return nil, err }
 	defer rows.Close()
+	
 	var exams []domain.Exam
+	examMap := make(map[string]*domain.Exam)
+	
 	for rows.Next() {
 		var e domain.Exam
-		var q, s []byte
-		rows.Scan(&e.ID, &e.Title, &e.Description, &q, &s, &e.CreatedAt)
-		json.Unmarshal(q, &e.Questions)
+		var s []byte
+		var timeLimit sql.NullInt64
+		var createdAt time.Time
+		var createdBy string
+		rows.Scan(&e.ID, &e.Title, &e.Description, &s, &timeLimit, &e.IsPublic, &createdBy, &createdAt)
+		e.CreatedAt = createdAt.UnixMilli()
+		e.CreatedBy = createdBy
+		if timeLimit.Valid {
+			e.TimeLimit = int(timeLimit.Int64)
+		}
 		json.Unmarshal(s, &e.Subjects)
+		e.Questions = []domain.Question{} // Inicializar array vazio
 		exams = append(exams, e)
+		examMap[e.ID] = &exams[len(exams)-1]
 	}
+	
+	// Buscar questões para cada exame (JOIN) - similar ao GetExamsByUser
+	if len(examMap) > 0 {
+		examIDs := make([]string, 0, len(examMap))
+		for id := range examMap {
+			examIDs = append(examIDs, id)
+		}
+		
+		placeholders := ""
+		for i := range examIDs {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += fmt.Sprintf("$%d", i+1)
+		}
+		
+		query := fmt.Sprintf(`
+			SELECT eq.exam_id, q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public
+			FROM exam_questions eq
+			JOIN questions q ON eq.question_id = q.id
+			WHERE eq.exam_id IN (%s)
+			ORDER BY eq.exam_id`, placeholders)
+		
+		args := make([]interface{}, len(examIDs))
+		for i, id := range examIDs {
+			args[i] = id
+		}
+		
+		qRows, err := r.DB.Query(query, args...)
+		if err == nil {
+			defer qRows.Close()
+			for qRows.Next() {
+				var examID string
+				var q domain.Question
+				var opt []byte
+				var subjectID, topicID sql.NullString
+				qRows.Scan(&examID, &q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic)
+				if subjectID.Valid {
+					q.SubjectID = subjectID.String
+				}
+				if topicID.Valid {
+					q.TopicID = topicID.String
+				}
+				json.Unmarshal(opt, &q.Options)
+				if exam, exists := examMap[examID]; exists {
+					exam.Questions = append(exam.Questions, q)
+				}
+			}
+		}
+	}
+	
 	return exams, nil
 }
 
 func (r *PostgresRepo) GetExamsByUser(userID string) ([]domain.Exam, error) {
-	rows, err := r.DB.Query("SELECT id, title, description, questions, subjects, created_at FROM exams WHERE created_by=$1 ORDER BY created_at DESC", userID)
+	// Buscar exames do usuário OU exames públicos
+	rows, err := r.DB.Query(`
+		SELECT e.id, e.title, e.description, e.subjects, e.time_limit, e.is_public, e.created_by, e.created_at 
+		FROM exams e 
+		WHERE e.created_by=$1 OR e.is_public=true
+		ORDER BY e.created_at DESC`, userID)
 	if err != nil { return nil, err }
 	defer rows.Close()
+	
 	var exams []domain.Exam
+	examMap := make(map[string]*domain.Exam)
+	
 	for rows.Next() {
 		var e domain.Exam
-		var q, s []byte
-		rows.Scan(&e.ID, &e.Title, &e.Description, &q, &s, &e.CreatedAt)
-		json.Unmarshal(q, &e.Questions)
+		var s []byte
+		var timeLimit sql.NullInt64
+		var createdAt time.Time
+		var createdBy string
+		rows.Scan(&e.ID, &e.Title, &e.Description, &s, &timeLimit, &e.IsPublic, &createdBy, &createdAt)
+		e.CreatedBy = createdBy
+		e.CreatedAt = createdAt.UnixMilli()
+		if timeLimit.Valid {
+			e.TimeLimit = int(timeLimit.Int64)
+		}
 		json.Unmarshal(s, &e.Subjects)
+		e.Questions = []domain.Question{} // Inicializar array vazio
 		exams = append(exams, e)
+		examMap[e.ID] = &exams[len(exams)-1]
 	}
+	
+	// Buscar questões para cada exame (JOIN)
+	if len(examMap) > 0 {
+		examIDs := make([]string, 0, len(examMap))
+		for id := range examMap {
+			examIDs = append(examIDs, id)
+		}
+		
+		// Query para buscar questões relacionadas
+		placeholders := ""
+		for i := range examIDs {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += fmt.Sprintf("$%d", i+1)
+		}
+		
+		query := fmt.Sprintf(`
+			SELECT eq.exam_id, q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public
+			FROM exam_questions eq
+			JOIN questions q ON eq.question_id = q.id
+			WHERE eq.exam_id IN (%s)
+			ORDER BY eq.exam_id`, placeholders)
+		
+		args := make([]interface{}, len(examIDs))
+		for i, id := range examIDs {
+			args[i] = id
+		}
+		
+		qRows, err := r.DB.Query(query, args...)
+		if err == nil {
+			defer qRows.Close()
+			for qRows.Next() {
+				var examID string
+				var q domain.Question
+				var opt []byte
+				var subjectID, topicID sql.NullString
+				qRows.Scan(&examID, &q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic)
+				if subjectID.Valid {
+					q.SubjectID = subjectID.String
+				}
+				if topicID.Valid {
+					q.TopicID = topicID.String
+				}
+				json.Unmarshal(opt, &q.Options)
+				if exam, exists := examMap[examID]; exists {
+					exam.Questions = append(exam.Questions, q)
+				}
+			}
+		}
+	}
+	
 	return exams, nil
 }
 
 func (r *PostgresRepo) GetExamByID(id string) (domain.Exam, error) {
 	var e domain.Exam
-	var q, s []byte
-	err := r.DB.QueryRow("SELECT id, title, description, questions, subjects, created_at FROM exams WHERE id=$1", id).
-		Scan(&e.ID, &e.Title, &e.Description, &q, &s, &e.CreatedAt)
-	if err == nil {
-		json.Unmarshal(q, &e.Questions)
-		json.Unmarshal(s, &e.Subjects)
+	var s []byte
+	var timeLimit sql.NullInt64
+	var createdAt time.Time
+	
+	// Buscar exame
+	err := r.DB.QueryRow(`
+		SELECT id, title, description, subjects, time_limit, is_public, created_by, created_at 
+		FROM exams 
+		WHERE id=$1`, id).
+		Scan(&e.ID, &e.Title, &e.Description, &s, &timeLimit, &e.IsPublic, &e.CreatedBy, &createdAt)
+	if err != nil {
+		return e, err
 	}
-	return e, err
+	
+	e.CreatedAt = createdAt.UnixMilli()
+	if timeLimit.Valid {
+		e.TimeLimit = int(timeLimit.Int64)
+	}
+	json.Unmarshal(s, &e.Subjects)
+	
+	// Buscar questões relacionadas (JOIN)
+	rows, err := r.DB.Query(`
+		SELECT q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public
+		FROM exam_questions eq
+		JOIN questions q ON eq.question_id = q.id
+		WHERE eq.exam_id = $1`, id)
+	if err == nil {
+		defer rows.Close()
+		e.Questions = []domain.Question{}
+		for rows.Next() {
+			var q domain.Question
+			var opt []byte
+			var subjectID, topicID sql.NullString
+			rows.Scan(&q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic)
+			if subjectID.Valid {
+				q.SubjectID = subjectID.String
+			}
+			if topicID.Valid {
+				q.TopicID = topicID.String
+			}
+			json.Unmarshal(opt, &q.Options)
+			e.Questions = append(e.Questions, q)
+		}
+	}
+	
+	return e, nil
 }
 
 func (r *PostgresRepo) DeleteExam(id string) error {

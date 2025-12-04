@@ -55,6 +55,19 @@ func (s *Service) LoginUser(email, password string) (domain.User, error) {
 	}
 	u.Token = tokenString
 	u.Password = "" // Sanitiza antes de devolver
+	
+	// Extrair preferences do profile para retornar como campo separado
+	if u.Profile != nil {
+		if profileMap, ok := u.Profile.(map[string]interface{}); ok {
+			if preferences, exists := profileMap["preferences"]; exists {
+				u.Preferences = preferences
+				// Remover preferences do profile para evitar duplicação
+				delete(profileMap, "preferences")
+				u.Profile = profileMap
+			}
+		}
+	}
+	
 	return u, nil
 }
 
@@ -125,4 +138,43 @@ func (s *Service) CalculateScore(exam domain.Exam, answers []map[string]interfac
 	}
 	
 	return correctCount, totalQuestions
+}
+
+// InitializeAdmin cria um usuário admin padrão se não existir nenhum admin no sistema
+func (s *Service) InitializeAdmin() error {
+	// Verificar se já existe um admin verificando pelo email
+	_, err := s.Repo.GetUserByEmail(s.Config.AdminEmail)
+	if err == nil {
+		// Admin já existe
+		return nil
+	}
+	
+	// Verificar se existe algum admin no sistema (caso o email seja diferente)
+	users, err := s.Repo.GetAllUsers()
+	if err == nil {
+		for _, user := range users {
+			if user.Role == domain.RoleAdmin {
+				return nil // Admin já existe
+			}
+		}
+	}
+	
+	// Criar admin padrão
+	admin := domain.User{
+		ID:                 "",
+		Name:               "Administrador",
+		Email:              s.Config.AdminEmail,
+		Password:           s.Config.AdminPassword,
+		Role:               domain.RoleAdmin,
+		Provider:           "email",
+		IsVerified:          true,
+		OnboardingCompleted: true,
+	}
+	
+	_, err = s.RegisterUser(admin)
+	if err != nil {
+		return err
+	}
+	
+	return nil
 }

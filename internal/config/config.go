@@ -11,6 +11,8 @@ type Config struct {
 	Port        string
 	DatabaseURL string
 	JWTSecret   string
+	AdminEmail  string
+	AdminPassword string
 }
 
 func LoadConfig() *Config {
@@ -18,9 +20,11 @@ func LoadConfig() *Config {
 	_ = godotenv.Load()
 
 	return &Config{
-		Port:        getEnv("PORT", "8080"),
-		DatabaseURL: getEnv("DATABASE_URL", "postgres://esimulate:DbaInv=2025@localhost:5432/esimulate_v1?sslmode=disable"),
-		JWTSecret:   getEnv("JWT_SECRET", "change_this_secret_in_production_please"),
+		Port:         getEnv("PORT", "8080"),
+		DatabaseURL:  getEnv("DATABASE_URL", "postgres://esimulate:DbaInv=2025@localhost:5432/esimulate_v1?sslmode=disable"),
+		JWTSecret:    getEnv("JWT_SECRET", "change_this_secret_in_production_please"),
+		AdminEmail:   getEnv("ADMIN_EMAIL", "admin@esimulate.com"),
+		AdminPassword: getEnv("ADMIN_PASSWORD", "admin123"),
 	}
 }
 
