@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS exams (
     subjects JSONB, -- Array de nomes de matérias (mantido para performance e compatibilidade)
     time_limit INT, -- Tempo limite em minutos (opcional)
     is_public BOOLEAN DEFAULT FALSE, -- Indica se o exame é público
-    -- is_verified removido: calculado no frontend baseado nas questões (todas devem estar verificadas)
+    -- is_verified removido: calculado dinamicamente baseado nas questões (todas devem estar verificadas)
     created_by UUID REFERENCES users(id) ON DELETE SET NULL, -- Usuário que criou o exame
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     token TEXT UNIQUE NOT NULL,
-    type TEXT NOT NULL, -- 'verification' | 'password_reset'
+    type TEXT NOT NULL, -- 'verification' | 'password_reset' | 'refresh_token'
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     used BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()

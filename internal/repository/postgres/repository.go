@@ -183,7 +183,7 @@ func (r *PostgresRepo) CreateExam(e domain.Exam) error {
 	createdAtTime := time.UnixMilli(e.CreatedAt)
 	
 	// 1. Criar/Atualizar exame (sem campo questions JSONB - usando apenas exam_questions)
-	// is_verified removido: calculado no frontend baseado nas questões
+	// is_verified removido: será calculado baseado nas questões (todas devem estar verificadas)
 	query := `INSERT INTO exams (id, title, description, subjects, time_limit, is_public, created_by, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET 
@@ -253,6 +253,7 @@ func (r *PostgresRepo) CreateExam(e domain.Exam) error {
 
 func (r *PostgresRepo) GetExams() ([]domain.Exam, error) {
 	// Buscar exames (sem questions - usando apenas exam_questions)
+	// is_verified removido: será calculado baseado nas questões
 	rows, err := r.DB.Query(`
 		SELECT id, title, description, subjects, time_limit, is_public, created_by, created_at 
 		FROM exams 
@@ -336,6 +337,7 @@ func (r *PostgresRepo) GetExams() ([]domain.Exam, error) {
 
 func (r *PostgresRepo) GetExamsByUser(userID string, publicOnly bool, ownerOnly bool) ([]domain.Exam, error) {
 	// Construir query baseada nos filtros
+	// is_verified removido: será calculado baseado nas questões
 	query := `SELECT e.id, e.title, e.description, e.subjects, e.time_limit, e.is_public, e.created_by, e.created_at FROM exams e WHERE 1=1`
 	args := []interface{}{}
 	argIndex := 1
@@ -441,6 +443,7 @@ func (r *PostgresRepo) GetExamByID(id string) (domain.Exam, error) {
 	var createdAt time.Time
 	
 	// Buscar exame
+	// is_verified removido: será calculado baseado nas questões
 	err := r.DB.QueryRow(`
 		SELECT id, title, description, subjects, time_limit, is_public, created_by, created_at 
 		FROM exams 
@@ -654,10 +657,87 @@ func (r *PostgresRepo) MarkTokenAsUsed(token string) error {
 	return err
 }
 
+// InvalidateRefreshToken invalida um refresh token específico (usado no logout)
+func (r *PostgresRepo) InvalidateRefreshToken(token string) error {
+	_, err := r.DB.Exec("DELETE FROM tokens WHERE token=$1 AND type='refresh_token'", token)
+	return err
+}
+
+// GetRefreshToken busca um refresh token e retorna o userID associado
+func (r *PostgresRepo) GetRefreshToken(token string) (string, time.Time, error) {
+	var userID string
+	var expiresAt time.Time
+	query := `SELECT user_id, expires_at FROM tokens WHERE token=$1 AND type='refresh_token' AND used=false`
+	err := r.DB.QueryRow(query, token).Scan(&userID, &expiresAt)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return userID, expiresAt, nil
+}
+
+// MarkRefreshTokenAsUsed marca um refresh token como usado (para detecção de reutilização)
+func (r *PostgresRepo) MarkRefreshTokenAsUsed(token string) error {
+	_, err := r.DB.Exec("UPDATE tokens SET used=true WHERE token=$1 AND type='refresh_token'", token)
+	return err
+}
+
+// GetActiveRefreshTokensCount retorna o número de refresh tokens ativos para um usuário
+func (r *PostgresRepo) GetActiveRefreshTokensCount(userID string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM tokens WHERE user_id=$1 AND type='refresh_token' AND used=false AND expires_at > NOW()`
+	err := r.DB.QueryRow(query, userID).Scan(&count)
+	return count, err
+}
+
+// RevokeOldRefreshTokens revoga os refresh tokens mais antigos de um usuário, mantendo apenas os N mais recentes
+func (r *PostgresRepo) RevokeOldRefreshTokens(userID string, keepCount int) error {
+	// Deletar tokens antigos, mantendo apenas os N mais recentes
+	query := `
+		DELETE FROM tokens 
+		WHERE user_id=$1 
+		AND type='refresh_token' 
+		AND id NOT IN (
+			SELECT id FROM tokens 
+			WHERE user_id=$1 
+			AND type='refresh_token' 
+			AND used=false 
+			AND expires_at > NOW()
+			ORDER BY created_at DESC 
+			LIMIT $2
+		)`
+	_, err := r.DB.Exec(query, userID, keepCount)
+	return err
+}
+
+// InvalidateAllUserRefreshTokens invalida todos os refresh tokens de um usuário (usado em caso de reutilização suspeita)
+func (r *PostgresRepo) InvalidateAllUserRefreshTokens(userID string) error {
+	_, err := r.DB.Exec("DELETE FROM tokens WHERE user_id=$1 AND type='refresh_token'", userID)
+	return err
+}
+
 // DeleteExpiredTokens exclui todos os tokens expirados (chamado quando detectamos um token expirado)
 func (r *PostgresRepo) DeleteExpiredTokens() error {
 	_, err := r.DB.Exec("DELETE FROM tokens WHERE expires_at < NOW()")
 	return err
+}
+
+// DeleteExpiredLinks exclui links públicos expirados
+func (r *PostgresRepo) DeleteExpiredLinks() error {
+	_, err := r.DB.Exec("DELETE FROM public_links WHERE expires_at IS NOT NULL AND expires_at < NOW()")
+	return err
+}
+
+// CleanupExpiredData limpa todos os dados expirados (tokens e links)
+func (r *PostgresRepo) CleanupExpiredData() error {
+	// Limpar tokens expirados
+	if err := r.DeleteExpiredTokens(); err != nil {
+		return fmt.Errorf("erro ao limpar tokens: %w", err)
+	}
+	// Limpar links expirados
+	if err := r.DeleteExpiredLinks(); err != nil {
+		return fmt.Errorf("erro ao limpar links: %w", err)
+	}
+	return nil
 }
 
 func (r *PostgresRepo) GetLinkByToken(token string) (domain.PublicLink, error) {

@@ -35,7 +35,7 @@ type Exam struct {
 	Subjects    []string   `json:"subjects"`
 	TimeLimit   int        `json:"timeLimit,omitempty"` // Tempo limite em minutos (opcional)
 	IsPublic    bool       `json:"isPublic,omitempty"`   // Indica se o exame é público
-	// IsVerified removido: calculado no frontend baseado nas questões (todas devem estar verificadas)
+	IsVerified  bool       `json:"isVerified,omitempty"` // Indica se o exame foi verificado (admin/specialist podem definir)
 	CreatedBy   string     `json:"createdBy,omitempty"`
 	CreatedAt   int64      `json:"createdAt"`
 }

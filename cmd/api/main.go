@@ -4,11 +4,12 @@ import (
 	"database/sql"
 	"esimulate-backend/internal/config"
 	"esimulate-backend/internal/delivery/http"
+	"esimulate-backend/internal/logger"
 	"esimulate-backend/internal/repository/postgres"
+	"esimulate-backend/internal/security"
 	"esimulate-backend/internal/service"
-	"fmt"
-	"log"
 	"os"
+	"strings"
 	httpNet "net/http"
 )
 
@@ -19,14 +20,14 @@ func main() {
 	// 2. Database
 	db, err := sql.Open("postgres", cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal(err)
 	}
 	defer db.Close()
 
 	if err := db.Ping(); err != nil {
-		log.Fatal("Cannot connect to DB:", err)
+		logger.Fatal("Cannot connect to DB:", err)
 	}
-	fmt.Println("Connected to PostgreSQL")
+	logger.Info("Connected to PostgreSQL")
 
 	// 3. Init Schema (Simple migration for MVP)
 	// Em produção, usar 'golang-migrate'
@@ -38,27 +39,46 @@ func main() {
 	
 	// 5. Initialize Admin User
 	if err := svc.InitializeAdmin(); err != nil {
-		log.Printf("Warning: Failed to initialize admin user: %v", err)
+		logger.Warn("Failed to initialize admin user: %v", err)
 	} else {
-		fmt.Printf("✓ Admin user ready: %s\n", cfg.AdminEmail)
+		logger.Info("Admin user ready: %s", cfg.AdminEmail)
 	}
 	
-	h := http.NewHandler(svc)
+	// 6. Start Cleanup Service (limpeza automática de dados expirados)
+	// Limpa tokens e links expirados diariamente às 3h da manhã
+	cleanupService := service.NewCleanupService(repo, 3)
+	cleanupService.Start()
+	defer cleanupService.Stop()
+	
+	// 7. Inicializar componentes de segurança
+	rateLimiter := security.NewRateLimiter()
+	auditLogger := security.NewAuditLogger()
+	tokenBlacklist := security.NewTokenBlacklist()
+	
+	h := http.NewHandler(svc, rateLimiter, auditLogger, tokenBlacklist)
 
-	// 6. Router (Go 1.22)
+	// 8. Router (Go 1.22)
 	mux := httpNet.NewServeMux()
 
-	// Auth
-	mux.HandleFunc("POST /api/auth/register", h.Register)
-	mux.HandleFunc("POST /api/auth/login", h.Login)
+	// Auth com rate limiting
+	loginRateLimit := security.RateLimitMiddleware(rateLimiter, "login")
+	registerRateLimit := security.RateLimitMiddleware(rateLimiter, "register")
+	refreshRateLimit := security.RateLimitMiddleware(rateLimiter, "refresh")
+	forgotRateLimit := security.RateLimitMiddleware(rateLimiter, "forgot-password")
+	verifyRateLimit := security.RateLimitMiddleware(rateLimiter, "verify-email")
+	
+	mux.HandleFunc("POST /api/auth/register", registerRateLimit(h.Register))
+	mux.HandleFunc("POST /api/auth/login", loginRateLimit(h.Login))
+	mux.HandleFunc("POST /api/auth/refresh", refreshRateLimit(h.RefreshToken))
+	mux.HandleFunc("POST /api/auth/logout", h.Logout)
 	// Auth Recovery
-	mux.HandleFunc("POST /api/auth/forgot-password", h.ForgotPassword)
+	mux.HandleFunc("POST /api/auth/forgot-password", forgotRateLimit(h.ForgotPassword))
 	mux.HandleFunc("POST /api/auth/reset-password", h.ResetPassword)
-	mux.HandleFunc("POST /api/auth/verify-email", h.VerifyEmail)
+	mux.HandleFunc("POST /api/auth/verify-email", verifyRateLimit(h.VerifyEmail))
 
-	// Protected Routes Helper
+	// Protected Routes Helper com blacklist
 	protect := func(handler httpNet.HandlerFunc) httpNet.HandlerFunc {
-		return http.AuthMiddleware(cfg.JWTSecret, handler)
+		return http.AuthMiddleware(cfg.JWTSecret, tokenBlacklist)(handler)
 	}
 
 	// Exams
@@ -103,9 +123,20 @@ func main() {
 	mux.HandleFunc("GET /api/public/exam/{token}", h.PublicGetExam)
 	mux.HandleFunc("POST /api/public/exam/{token}/submit", h.PublicSubmit)
 
-	server := http.CORSMiddleware(mux)
-	fmt.Printf("Server running on port %s\n", cfg.Port)
-	log.Fatal(httpNet.ListenAndServe(":"+cfg.Port, server))
+	// Aplicar middlewares de segurança
+	// 1. HTTPS enforcement (em produção)
+	server := http.HTTPSMiddleware(mux)
+	
+	// 2. CORS restritivo
+	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
+	if len(allowedOrigins) == 0 || allowedOrigins[0] == "" {
+		// Fallback para desenvolvimento
+		allowedOrigins = []string{"*"}
+	}
+	server = http.CORSMiddleware(allowedOrigins)(server)
+	
+	logger.Info("Server running on port %s", cfg.Port)
+	logger.Fatal(httpNet.ListenAndServe(":"+cfg.Port, server))
 }
 
 func runMigration(db *sql.DB) {
@@ -113,16 +144,16 @@ func runMigration(db *sql.DB) {
 	// Nota: Em um ambiente real, o arquivo estaria em 'migrations/' ou embutido
 	// Para este prompt, vamos assumir que o schema está no arquivo schema.sql gerado anteriormente
 	// Aqui apenas logamos que deve ser rodado manualmente ou via ferramenta externa
-	fmt.Println("INFO: Ensure database schema is applied using schema.sql")
+	logger.Debug("Verificando schema do banco de dados...")
 
 	// Execução simplificada inline para garantir funcionamento no MVP se o arquivo existir
 	content, err := os.ReadFile("internal/database/schema.sql")
 	if err == nil {
 		_, err = db.Exec(string(content))
 		if err != nil {
-			fmt.Println("Migration warning:", err)
+			logger.Warn("Migration warning: %v", err)
 		} else {
-			fmt.Println("Schema applied.")
+			logger.Debug("Schema aplicado com sucesso")
 		}
 	}
 }

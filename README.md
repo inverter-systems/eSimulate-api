@@ -21,21 +21,31 @@ API RESTful desenvolvida em Go (Golang) para o sistema eSimulate - plataforma de
 
 O eSimulate é uma plataforma completa para criação, gerenciamento e execução de simulados e provas online. A API oferece:
 
-- ✅ Autenticação e autorização com JWT
-- ✅ Gerenciamento de usuários (admin, user, company)
+- ✅ Autenticação e autorização com JWT + Refresh Tokens
+- ✅ Gerenciamento de usuários (admin, user, company, specialist)
 - ✅ Criação e gerenciamento de exames
 - ✅ Banco de questões reutilizáveis
 - ✅ Sistema de resultados e estatísticas
 - ✅ Links públicos para acesso externo (B2B)
 - ✅ Conformidade com LGPD
 - ✅ API RESTful completa
+- ✅ **Medidas de segurança avançadas** (Rate limiting, Token rotation, CSRF protection, etc.)
 
 ## 🛠 Tecnologias
 
 - **Linguagem:** Go 1.22+
 - **Banco de Dados:** PostgreSQL 12+
 - **Autenticação:** JWT (JSON Web Tokens) - HMAC SHA256
-- **Segurança:** BCrypt para hash de senhas
+- **Segurança:** 
+  - BCrypt para hash de senhas
+  - Refresh Tokens com rotação automática
+  - Rate limiting
+  - Token blacklist
+  - Validação de força de senha
+  - CORS restritivo
+  - HTTPS enforcement
+  - SameSite cookies (proteção CSRF)
+  - Logging de segurança
 - **HTTP Router:** Go 1.22 `net/http` mux (padrão)
 - **Dependências Principais:**
   - `github.com/golang-jwt/jwt/v5` - JWT
@@ -387,11 +397,23 @@ Ao modificar o código:
 4. ✅ Nunca exponha `password_hash` em respostas JSON
 5. ✅ Siga a Clean Architecture
 6. ✅ Documente funções públicas
+7. ✅ Use mensagens de erro genéricas (não vaze informações)
+8. ✅ Implemente rate limiting em novos endpoints sensíveis
+9. ✅ Valide entrada do usuário (senha, email, etc.)
+10. ✅ Use logging de segurança para eventos importantes
 
 ## 📚 Documentação Adicional
 
+### Especificações
 - [REQUIREMENTS.md](./REQUIREMENTS.md) - **Especificação de requisitos e regras de negócio**
 - [BACKEND_SPEC.md](./BACKEND_SPEC.md) - Especificação técnica detalhada
+- [FRONTEND_CONTRACT_API.md](../node/react/eSimulate/docs/FRONTEND_CONTRACT_API.md) - Contrato de API para frontend
+
+### Segurança
+- [SECURITY_IMPLEMENTATION.md](./SECURITY_IMPLEMENTATION.md) - **Documentação completa de segurança**
+- [FRONTEND_INTEGRATION_GUIDE.md](./FRONTEND_INTEGRATION_GUIDE.md) - **Guia de integração para frontend**
+
+### Banco de Dados
 - [DATABASE_ANALYSIS.md](./DATABASE_ANALYSIS.md) - Análise e otimização do banco de dados
 - [DATABASE_SUMMARY.md](./DATABASE_SUMMARY.md) - Resumo das melhorias do banco
 - [MIGRATION_SUBJECT_TOPIC.md](./MIGRATION_SUBJECT_TOPIC.md) - Migração para subject_id/topic_id

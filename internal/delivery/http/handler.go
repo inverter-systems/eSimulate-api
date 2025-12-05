@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"esimulate-backend/internal/domain"
+	"esimulate-backend/internal/security"
 	"esimulate-backend/internal/service"
 	"net/http"
 	"time"
@@ -12,11 +13,19 @@ import (
 )
 
 type Handler struct {
-	Service *service.Service
+	Service     *service.Service
+	RateLimiter *security.RateLimiter
+	AuditLogger *security.AuditLogger
+	Blacklist   *security.TokenBlacklist
 }
 
-func NewHandler(svc *service.Service) *Handler {
-	return &Handler{Service: svc}
+func NewHandler(svc *service.Service, rl *security.RateLimiter, al *security.AuditLogger, bl *security.TokenBlacklist) *Handler {
+	return &Handler{
+		Service:     svc,
+		RateLimiter: rl,
+		AuditLogger: al,
+		Blacklist:   bl,
+	}
 }
 
 // Helper methods
@@ -35,12 +44,19 @@ func (h *Handler) Error(w http.ResponseWriter, status int, msg string) {
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	var u domain.User
 	if err := json.NewDecoder(r.Body).Decode(&u); err != nil {
-		h.Error(w, 400, "Invalid JSON")
+		h.Error(w, 400, "Requisição inválida")
 		return
 	}
 	created, err := h.Service.RegisterUser(u)
 	if err != nil {
-		h.Error(w, 500, err.Error())
+		// Mensagens de erro genéricas para não vazar informações
+		if err.Error() == "senha deve ter no mínimo 8 caracteres" || 
+		   err.Error() == "senha deve conter pelo menos uma letra" ||
+		   err.Error() == "senha muito comum" {
+			h.Error(w, 400, err.Error()) // Erros de validação de senha são OK
+		} else {
+			h.Error(w, 400, "Erro ao criar conta. Verifique os dados fornecidos.")
+		}
 		return
 	}
 	h.JSON(w, 201, created)
@@ -49,15 +65,134 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	var creds struct { Email, Password string }
 	if err := json.NewDecoder(r.Body).Decode(&creds); err != nil {
-		h.Error(w, 400, "Invalid JSON")
+		h.Error(w, 400, "Requisição inválida")
 		return
 	}
-	user, err := h.Service.LoginUser(creds.Email, creds.Password)
+	
+	ip := getClientIP(r)
+	userAgent := r.UserAgent()
+	
+	loginResp, refreshToken, err := h.Service.LoginUser(creds.Email, creds.Password)
 	if err != nil {
-		h.Error(w, 401, err.Error())
+		// Log de tentativa falha
+		h.AuditLogger.LogLogin("", ip, userAgent, false)
+		
+		// Conforme contrato: se email não verificado, retornar 403
+		if err.Error() == "Email não verificado" {
+			h.Error(w, 403, "Email não verificado")
+			return
+		}
+		// Mensagem genérica para não vazar informações
+		h.Error(w, 401, "Credenciais inválidas")
 		return
 	}
-	h.JSON(w, 200, user)
+	
+	// Log de login bem-sucedido
+	h.AuditLogger.LogLogin(loginResp.User.ID, ip, userAgent, true)
+	
+	// Setar cookie refresh_token conforme contrato v2.4.0
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    refreshToken,
+		HttpOnly: true,
+		Secure:   r.TLS != nil, // Secure apenas em HTTPS (conforme contrato)
+		SameSite: http.SameSiteStrictMode,
+		Path:     "/api/auth/refresh",
+		MaxAge:   604800, // 7 dias em segundos
+	})
+	
+	// Retornar resposta conforme contrato: { "user": {...}, "token": "..." }
+	h.JSON(w, 200, loginResp)
+}
+
+// getClientIP extrai o IP real do cliente
+func getClientIP(r *http.Request) string {
+	forwarded := r.Header.Get("X-Forwarded-For")
+	if forwarded != "" {
+		return forwarded
+	}
+	realIP := r.Header.Get("X-Real-IP")
+	if realIP != "" {
+		return realIP
+	}
+	return r.RemoteAddr
+}
+
+func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
+	ip := getClientIP(r)
+	userAgent := r.UserAgent()
+	
+	// Ler refresh token do cookie
+	cookie, err := r.Cookie("refresh_token")
+	if err != nil {
+		h.AuditLogger.LogRefresh("", ip, userAgent, false)
+		h.Error(w, 401, "Credenciais inválidas")
+		return
+	}
+
+	// Gerar novo access token (com rotação de refresh token)
+	newAccessToken, newRefreshToken, err := h.Service.RefreshAccessToken(cookie.Value)
+	if err != nil {
+		h.AuditLogger.LogRefresh("", ip, userAgent, false)
+		h.Error(w, 401, "Credenciais inválidas")
+		return
+	}
+
+	// Log de refresh bem-sucedido (userID será obtido do novo token se necessário)
+	h.AuditLogger.LogRefresh("", ip, userAgent, true)
+
+	// Setar novo refresh token no cookie (rotação)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    newRefreshToken,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+		Path:     "/api/auth/refresh",
+		MaxAge:   604800,
+	})
+
+	// Retornar novo access token conforme contrato
+	h.JSON(w, 200, map[string]string{"token": newAccessToken})
+}
+
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	ip := getClientIP(r)
+	userAgent := r.UserAgent()
+	userID := ""
+	
+	// Obter tokenID do context (se disponível)
+	tokenID, _ := r.Context().Value("tokenID").(string)
+	
+	// Ler refresh token do cookie
+	cookie, err := r.Cookie("refresh_token")
+	if err == nil {
+		// Buscar userID antes de invalidar
+		userID, _, _ = h.Service.Repo.GetRefreshToken(cookie.Value)
+		
+		// Invalidar refresh token no banco
+		h.Service.Repo.InvalidateRefreshToken(cookie.Value)
+	}
+
+	// Adicionar access token ao blacklist (se disponível)
+	if tokenID != "" {
+		// Access token expira em 15 minutos, então manter no blacklist por 20 minutos
+		h.Blacklist.Add(tokenID, time.Now().Add(20*time.Minute))
+	}
+
+	// Log de logout
+	h.AuditLogger.LogLogout(userID, ip, userAgent)
+
+	// Limpar cookie conforme contrato v2.4.0
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refresh_token",
+		Value:    "",
+		HttpOnly: true,
+		Path:     "/api/auth/refresh",
+		MaxAge:   0, // Expirar imediatamente
+	})
+
+	h.JSON(w, 200, map[string]string{"message": "Logged out"})
 }
 
 func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
@@ -153,19 +288,19 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	
 	if tokenType != "verification" {
-		h.Error(w, 400, "Token inválido")
+		h.Error(w, 400, "Token inválido ou expirado")
 		return
 	}
 	
 	if used {
-		h.Error(w, 400, "Token já foi utilizado")
+		h.Error(w, 400, "Token inválido ou expirado")
 		return
 	}
 	
 	if time.Now().After(expiresAt) {
 		// Excluir token expirado automaticamente
 		h.Service.Repo.DeleteExpiredTokens()
-		h.Error(w, 400, "Token expirado")
+		h.Error(w, 400, "Token inválido ou expirado")
 		return
 	}
 	
@@ -181,7 +316,24 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	// Marcar token como usado
 	h.Service.Repo.MarkTokenAsUsed(req.Token)
 	
-	h.JSON(w, 200, map[string]string{"message": "Email verificado"})
+	// Conforme contrato FRONTEND_CONTRACT_API.md: retornar { "success": true }
+	h.JSON(w, 200, map[string]bool{"success": true})
+}
+
+// calculateExamIsVerified calcula isVerified baseado nas questões (todas devem estar verificadas)
+// Esta função está duplicada aqui para uso nos handlers
+// A versão principal está em internal/service/service.go
+func calculateExamIsVerified(exam domain.Exam) bool {
+	if len(exam.Questions) == 0 {
+		return false // Exame sem questões não pode ser verificado
+	}
+	// Todas as questões devem estar verificadas
+	for _, q := range exam.Questions {
+		if !q.IsVerified {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) GetExams(w http.ResponseWriter, r *http.Request) {
@@ -193,6 +345,12 @@ func (h *Handler) GetExams(w http.ResponseWriter, r *http.Request) {
 	
 	exams, err := h.Service.Repo.GetExamsByUser(userID, publicOnly, ownerOnly)
 	if err != nil { h.Error(w, 500, err.Error()); return }
+	
+	// Calcular isVerified para cada exame baseado nas questões
+	for i := range exams {
+		exams[i].IsVerified = calculateExamIsVerified(exams[i])
+	}
+	
 	h.JSON(w, 200, exams)
 }
 
@@ -210,6 +368,9 @@ func (h *Handler) GetExam(w http.ResponseWriter, r *http.Request) {
 		h.Error(w, 403, "Access denied")
 		return
 	}
+	
+	// Calcular isVerified baseado nas questões
+	exam.IsVerified = calculateExamIsVerified(exam)
 	
 	h.JSON(w, 200, exam)
 }
@@ -239,7 +400,10 @@ func (h *Handler) CreateExam(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	
-	// isVerified removido de Exam - será calculado no frontend baseado nas questões
+	// isVerified não é mais armazenado - será calculado baseado nas questões
+	// Remover isVerified do payload se foi enviado (frontend não deve enviar)
+	e.IsVerified = false // Será calculado depois
+	
 	// Validar isVerified das questões: só admin/specialist podem marcar questões como verificadas
 	for i := range e.Questions {
 		if e.Questions[i].IsVerified && userRole != "admin" && userRole != "specialist" {
@@ -252,6 +416,9 @@ func (h *Handler) CreateExam(w http.ResponseWriter, r *http.Request) {
 	// Retornar exame atualizado
 	exam, err := h.Service.Repo.GetExamByID(e.ID)
 	if err != nil { h.Error(w, 500, "Failed to fetch exam"); return }
+	
+	// Calcular isVerified baseado nas questões
+	exam.IsVerified = calculateExamIsVerified(exam)
 	
 	// Retornar 200 se for update, 201 se for create
 	if isUpdate {
