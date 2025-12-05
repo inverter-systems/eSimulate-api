@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user', -- Valores: 'admin', 'user', 'company'
+    role TEXT NOT NULL DEFAULT 'user', -- Valores: 'admin', 'user', 'company', 'specialist'
     provider TEXT DEFAULT 'email', -- Provedor de autenticação: 'email', 'google', 'github'
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS questions (
     subject_id UUID REFERENCES subjects(id) ON DELETE SET NULL, -- Matéria relacionada (FK)
     topic_id UUID REFERENCES topics(id) ON DELETE SET NULL, -- Tópico relacionado (FK)
     is_public BOOLEAN DEFAULT FALSE, -- Indica se a questão é pública
+    is_verified BOOLEAN DEFAULT FALSE, -- Indica se a questão foi verificada por admin/specialist
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -92,6 +93,7 @@ CREATE TABLE IF NOT EXISTS exams (
     subjects JSONB, -- Array de nomes de matérias (mantido para performance e compatibilidade)
     time_limit INT, -- Tempo limite em minutos (opcional)
     is_public BOOLEAN DEFAULT FALSE, -- Indica se o exame é público
+    -- is_verified removido: calculado no frontend baseado nas questões (todas devem estar verificadas)
     created_by UUID REFERENCES users(id) ON DELETE SET NULL, -- Usuário que criou o exame
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -148,7 +150,25 @@ CREATE INDEX IF NOT EXISTS idx_results_user_date ON results(user_id, date DESC)
 CREATE INDEX IF NOT EXISTS idx_results_exam_date ON results(exam_id, date DESC);
 
 -- ============================================
--- 8. TABELA DE LINKS PÚBLICOS (PUBLIC_LINKS)
+-- 8. TABELA DE TOKENS DE VERIFICAÇÃO E RESET
+-- ============================================
+CREATE TABLE IF NOT EXISTS tokens (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    token TEXT UNIQUE NOT NULL,
+    type TEXT NOT NULL, -- 'verification' | 'password_reset'
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tokens_token ON tokens(token);
+CREATE INDEX IF NOT EXISTS idx_tokens_user_id ON tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_tokens_type ON tokens(type);
+CREATE INDEX IF NOT EXISTS idx_tokens_expires_at ON tokens(expires_at);
+
+-- ============================================
+-- 9. TABELA DE LINKS PÚBLICOS (PUBLIC_LINKS)
 -- ============================================
 CREATE TABLE IF NOT EXISTS public_links (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -170,7 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_public_links_active_token ON public_links(active,
     WHERE active = TRUE;
 
 -- ============================================
--- 9. TRIGGERS PARA ATUALIZAÇÃO AUTOMÁTICA
+-- 10. TRIGGERS PARA ATUALIZAÇÃO AUTOMÁTICA
 -- ============================================
 -- Função para atualizar updated_at automaticamente
 CREATE OR REPLACE FUNCTION update_updated_at_column()
@@ -182,17 +202,21 @@ END;
 $$ language 'plpgsql';
 
 -- Triggers para atualizar updated_at em updates
+-- Drop se existir antes de criar (evita erro se já existir)
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_questions_updated_at ON questions;
 CREATE TRIGGER update_questions_updated_at BEFORE UPDATE ON questions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_exams_updated_at ON exams;
 CREATE TRIGGER update_exams_updated_at BEFORE UPDATE ON exams
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================
--- 10. VIEWS ÚTEIS
+-- 11. VIEWS ÚTEIS
 -- ============================================
 -- View para estatísticas de exames
 CREATE OR REPLACE VIEW exam_stats AS
@@ -211,7 +235,7 @@ WHERE e.is_active = TRUE
 GROUP BY e.id, e.title, e.created_at;
 
 -- ============================================
--- 11. COMENTÁRIOS PARA DOCUMENTAÇÃO
+-- 12. COMENTÁRIOS PARA DOCUMENTAÇÃO
 -- ============================================
 COMMENT ON TABLE users IS 'Usuários do sistema com diferentes roles (admin, user, company)';
 COMMENT ON TABLE subjects IS 'Matérias/disciplinas disponíveis no sistema';

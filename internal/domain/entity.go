@@ -4,9 +4,10 @@ package domain
 type Role string
 
 const (
-	RoleAdmin   Role = "admin"
-	RoleUser    Role = "user"
-	RoleCompany Role = "company"
+	RoleAdmin      Role = "admin"
+	RoleUser       Role = "user"
+	RoleCompany    Role = "company"
+	RoleSpecialist Role = "specialist"
 )
 
 // User representa um usuário do sistema
@@ -34,6 +35,7 @@ type Exam struct {
 	Subjects    []string   `json:"subjects"`
 	TimeLimit   int        `json:"timeLimit,omitempty"` // Tempo limite em minutos (opcional)
 	IsPublic    bool       `json:"isPublic,omitempty"`   // Indica se o exame é público
+	// IsVerified removido: calculado no frontend baseado nas questões (todas devem estar verificadas)
 	CreatedBy   string     `json:"createdBy,omitempty"`
 	CreatedAt   int64      `json:"createdAt"`
 }
@@ -45,9 +47,10 @@ type Question struct {
 	Options      []string `json:"options"`
 	CorrectIndex int      `json:"correctIndex"`          // -1 se for resposta pública sanitizada
 	Explanation  string   `json:"explanation,omitempty"` // Vazio se for resposta pública sanitizada
-	SubjectID    string   `json:"subjectId,omitempty"`   // FK para subjects (UUID)
-	TopicID      string   `json:"topicId,omitempty"`     // FK para topics (UUID)
-	IsPublic     bool     `json:"isPublic,omitempty"`    // Indica se a questão é pública
+	SubjectID    string   `json:"subjectId,omitempty"`    // FK para subjects (UUID)
+	TopicID      string   `json:"topicId,omitempty"`      // FK para topics (UUID)
+	IsPublic     bool     `json:"isPublic,omitempty"`     // Indica se a questão é pública
+	IsVerified   bool     `json:"isVerified,omitempty"`  // Indica se a questão foi verificada por admin/specialist
 	// Campos legados para compatibilidade (opcional, podem ser removidos depois)
 	Subject string `json:"subject,omitempty"` // @deprecated - usar subjectId
 	Topic   string `json:"topic,omitempty"`   // @deprecated - usar topicId

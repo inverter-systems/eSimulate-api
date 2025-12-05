@@ -8,16 +8,22 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Service struct {
-	Repo   *postgres.PostgresRepo
-	Config *config.Config
+	Repo         *postgres.PostgresRepo
+	Config       *config.Config
+	EmailService *EmailService
 }
 
 func NewService(repo *postgres.PostgresRepo, cfg *config.Config) *Service {
-	return &Service{Repo: repo, Config: cfg}
+	return &Service{
+		Repo:         repo,
+		Config:       cfg,
+		EmailService: NewEmailService(),
+	}
 }
 
 // --- Auth Services ---
@@ -29,7 +35,23 @@ func (s *Service) RegisterUser(u domain.User) (domain.User, error) {
 		return domain.User{}, err
 	}
 	u.Password = string(hashed)
-	return s.Repo.CreateUser(u)
+	created, err := s.Repo.CreateUser(u)
+	if err != nil {
+		return created, err
+	}
+	
+	// Só enviar email de verificação se o usuário não estiver já verificado
+	if !created.IsVerified {
+		// Gerar token de verificação e enviar email
+		token := uuid.New().String()
+		expiresAt := time.Now().Add(24 * time.Hour) // Token válido por 24 horas
+		if err := s.Repo.CreateToken(created.ID, token, "verification", expiresAt); err == nil {
+			// Enviar email de verificação (não bloquear se falhar)
+			go s.EmailService.SendVerificationEmail(created.Email, created.Name, token)
+		}
+	}
+	
+	return created, nil
 }
 
 func (s *Service) LoginUser(email, password string) (domain.User, error) {

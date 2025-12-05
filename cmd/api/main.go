@@ -93,7 +93,11 @@ func main() {
 	// Company
 	mux.HandleFunc("GET /api/company/links", protect(h.GetCompanyLinks))
 	mux.HandleFunc("POST /api/company/links", protect(h.CreateLink))
+	mux.HandleFunc("POST /api/company/invite", protect(h.CompanyInvite))
 	mux.HandleFunc("GET /api/company/results", protect(h.GetCompanyResults))
+	
+	// Contact
+	mux.HandleFunc("POST /api/contact/admin", h.ContactAdmin)
 
 	// Public
 	mux.HandleFunc("GET /api/public/exam/{token}", h.PublicGetExam)
