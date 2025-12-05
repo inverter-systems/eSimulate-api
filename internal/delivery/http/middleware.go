@@ -32,6 +32,9 @@ func AuthMiddleware(secret string, next http.HandlerFunc) http.HandlerFunc {
 		if err != nil || !token.Valid { http.Error(w, "Invalid token", 401); return }
 
 		ctx := context.WithValue(r.Context(), "userID", claims["user_id"])
+		if role, ok := claims["role"].(string); ok {
+			ctx = context.WithValue(ctx, "role", role)
+		}
 		next(w, r.WithContext(ctx))
 	}
 }

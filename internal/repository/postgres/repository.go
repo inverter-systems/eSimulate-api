@@ -146,6 +146,16 @@ func (r *PostgresRepo) UpdateUser(id string, updates map[string]interface{}) err
 		_, err := r.DB.Exec("UPDATE users SET onboarding_completed=$1 WHERE id=$2", onboardingCompleted, id)
 		if err != nil { return err }
 	}
+	// Atualiza password se fornecido
+	if password, ok := updates["password"]; ok {
+		_, err := r.DB.Exec("UPDATE users SET password_hash=$1 WHERE id=$2", password, id)
+		if err != nil { return err }
+	}
+	// Atualiza is_verified se fornecido
+	if isVerified, ok := updates["is_verified"]; ok {
+		_, err := r.DB.Exec("UPDATE users SET is_verified=$1 WHERE id=$2", isVerified, id)
+		if err != nil { return err }
+	}
 	return nil
 }
 
@@ -173,6 +183,7 @@ func (r *PostgresRepo) CreateExam(e domain.Exam) error {
 	createdAtTime := time.UnixMilli(e.CreatedAt)
 	
 	// 1. Criar/Atualizar exame (sem campo questions JSONB - usando apenas exam_questions)
+	// is_verified removido: calculado no frontend baseado nas questões
 	query := `INSERT INTO exams (id, title, description, subjects, time_limit, is_public, created_by, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET 
@@ -212,8 +223,8 @@ func (r *PostgresRepo) CreateExam(e domain.Exam) error {
 			topicID.Valid = true
 		}
 		
-		upsertQuery := `INSERT INTO questions (id, text, options, correct_index, explanation, subject_id, topic_id, is_public)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		upsertQuery := `INSERT INTO questions (id, text, options, correct_index, explanation, subject_id, topic_id, is_public, is_verified)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			ON CONFLICT (id) DO UPDATE SET 
 				text=$2, 
 				options=$3, 
@@ -222,8 +233,9 @@ func (r *PostgresRepo) CreateExam(e domain.Exam) error {
 				subject_id=$6, 
 				topic_id=$7,
 				is_public=$8,
+				is_verified=$9,
 				updated_at=NOW()`
-		_, err = tx.Exec(upsertQuery, q.ID, q.Text, optJSON, q.CorrectIndex, q.Explanation, subjectID, topicID, q.IsPublic)
+		_, err = tx.Exec(upsertQuery, q.ID, q.Text, optJSON, q.CorrectIndex, q.Explanation, subjectID, topicID, q.IsPublic, q.IsVerified)
 		if err != nil {
 			return err
 		}
@@ -285,7 +297,7 @@ func (r *PostgresRepo) GetExams() ([]domain.Exam, error) {
 		}
 		
 		query := fmt.Sprintf(`
-			SELECT eq.exam_id, q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public
+			SELECT eq.exam_id, q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public, q.is_verified
 			FROM exam_questions eq
 			JOIN questions q ON eq.question_id = q.id
 			WHERE eq.exam_id IN (%s)
@@ -304,7 +316,7 @@ func (r *PostgresRepo) GetExams() ([]domain.Exam, error) {
 				var q domain.Question
 				var opt []byte
 				var subjectID, topicID sql.NullString
-				qRows.Scan(&examID, &q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic)
+				qRows.Scan(&examID, &q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic, &q.IsVerified)
 				if subjectID.Valid {
 					q.SubjectID = subjectID.String
 				}
@@ -322,13 +334,28 @@ func (r *PostgresRepo) GetExams() ([]domain.Exam, error) {
 	return exams, nil
 }
 
-func (r *PostgresRepo) GetExamsByUser(userID string) ([]domain.Exam, error) {
-	// Buscar exames do usuário OU exames públicos
-	rows, err := r.DB.Query(`
-		SELECT e.id, e.title, e.description, e.subjects, e.time_limit, e.is_public, e.created_by, e.created_at 
-		FROM exams e 
-		WHERE e.created_by=$1 OR e.is_public=true
-		ORDER BY e.created_at DESC`, userID)
+func (r *PostgresRepo) GetExamsByUser(userID string, publicOnly bool, ownerOnly bool) ([]domain.Exam, error) {
+	// Construir query baseada nos filtros
+	query := `SELECT e.id, e.title, e.description, e.subjects, e.time_limit, e.is_public, e.created_by, e.created_at FROM exams e WHERE 1=1`
+	args := []interface{}{}
+	argIndex := 1
+	
+	if ownerOnly {
+		query += fmt.Sprintf(" AND e.created_by=$%d", argIndex)
+		args = append(args, userID)
+		argIndex++
+	} else if publicOnly {
+		query += " AND e.is_public=true"
+	} else {
+		// Padrão: exames do usuário OU exames públicos
+		query += fmt.Sprintf(" AND (e.created_by=$%d OR e.is_public=true)", argIndex)
+		args = append(args, userID)
+		argIndex++
+	}
+	
+	query += " ORDER BY e.created_at DESC"
+	
+	rows, err := r.DB.Query(query, args...)
 	if err != nil { return nil, err }
 	defer rows.Close()
 	
@@ -370,7 +397,7 @@ func (r *PostgresRepo) GetExamsByUser(userID string) ([]domain.Exam, error) {
 		}
 		
 		query := fmt.Sprintf(`
-			SELECT eq.exam_id, q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public
+			SELECT eq.exam_id, q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public, q.is_verified
 			FROM exam_questions eq
 			JOIN questions q ON eq.question_id = q.id
 			WHERE eq.exam_id IN (%s)
@@ -389,7 +416,7 @@ func (r *PostgresRepo) GetExamsByUser(userID string) ([]domain.Exam, error) {
 				var q domain.Question
 				var opt []byte
 				var subjectID, topicID sql.NullString
-				qRows.Scan(&examID, &q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic)
+				qRows.Scan(&examID, &q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic, &q.IsVerified)
 				if subjectID.Valid {
 					q.SubjectID = subjectID.String
 				}
@@ -431,7 +458,7 @@ func (r *PostgresRepo) GetExamByID(id string) (domain.Exam, error) {
 	
 	// Buscar questões relacionadas (JOIN)
 	rows, err := r.DB.Query(`
-		SELECT q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public
+		SELECT q.id, q.text, q.options, q.correct_index, q.explanation, q.subject_id, q.topic_id, q.is_public, q.is_verified
 		FROM exam_questions eq
 		JOIN questions q ON eq.question_id = q.id
 		WHERE eq.exam_id = $1`, id)
@@ -442,7 +469,7 @@ func (r *PostgresRepo) GetExamByID(id string) (domain.Exam, error) {
 			var q domain.Question
 			var opt []byte
 			var subjectID, topicID sql.NullString
-			rows.Scan(&q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic)
+			rows.Scan(&q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic, &q.IsVerified)
 			if subjectID.Valid {
 				q.SubjectID = subjectID.String
 			}
@@ -478,8 +505,8 @@ func (r *PostgresRepo) CreateQuestion(q domain.Question) error {
 		topicID.Valid = true
 	}
 	
-	query := `INSERT INTO questions (id, text, options, correct_index, explanation, subject_id, topic_id, is_public)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	query := `INSERT INTO questions (id, text, options, correct_index, explanation, subject_id, topic_id, is_public, is_verified)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET 
 			text=$2, 
 			options=$3, 
@@ -487,13 +514,14 @@ func (r *PostgresRepo) CreateQuestion(q domain.Question) error {
 			explanation=$5, 
 			subject_id=$6, 
 			topic_id=$7,
-			is_public=$8`
-	_, err := r.DB.Exec(query, q.ID, q.Text, optJSON, q.CorrectIndex, q.Explanation, subjectID, topicID, q.IsPublic)
+			is_public=$8,
+			is_verified=$9`
+	_, err := r.DB.Exec(query, q.ID, q.Text, optJSON, q.CorrectIndex, q.Explanation, subjectID, topicID, q.IsPublic, q.IsVerified)
 	return err
 }
 
 func (r *PostgresRepo) GetQuestions() ([]domain.Question, error) {
-	rows, err := r.DB.Query("SELECT id, text, options, correct_index, explanation, subject_id, topic_id, is_public FROM questions")
+	rows, err := r.DB.Query("SELECT id, text, options, correct_index, explanation, subject_id, topic_id, is_public, is_verified FROM questions")
 	if err != nil { return nil, err }
 	defer rows.Close()
 	var questions []domain.Question
@@ -501,7 +529,7 @@ func (r *PostgresRepo) GetQuestions() ([]domain.Question, error) {
 		var q domain.Question
 		var opt []byte
 		var subjectID, topicID sql.NullString
-		err := rows.Scan(&q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic)
+		err := rows.Scan(&q.ID, &q.Text, &opt, &q.CorrectIndex, &q.Explanation, &subjectID, &topicID, &q.IsPublic, &q.IsVerified)
 		if err != nil { continue }
 		if subjectID.Valid {
 			q.SubjectID = subjectID.String
@@ -598,6 +626,38 @@ func (r *PostgresRepo) GetLinks(companyID string) ([]domain.PublicLink, error) {
 		links = append(links, l)
 	}
 	return links, nil
+}
+
+// --- Token Management ---
+
+func (r *PostgresRepo) CreateToken(userID, token, tokenType string, expiresAt time.Time) error {
+	query := `INSERT INTO tokens (user_id, token, type, expires_at) VALUES ($1, $2, $3, $4)`
+	_, err := r.DB.Exec(query, userID, token, tokenType, expiresAt)
+	return err
+}
+
+func (r *PostgresRepo) GetToken(token string) (string, string, time.Time, bool, error) {
+	var userID, tokenType string
+	var expiresAt time.Time
+	var used bool
+	query := `SELECT user_id, type, expires_at, used FROM tokens WHERE token=$1`
+	err := r.DB.QueryRow(query, token).Scan(&userID, &tokenType, &expiresAt, &used)
+	if err != nil {
+		return "", "", time.Time{}, false, err
+	}
+	return userID, tokenType, expiresAt, used, nil
+}
+
+func (r *PostgresRepo) MarkTokenAsUsed(token string) error {
+	// Excluir imediatamente após uso (não precisamos mais dele)
+	_, err := r.DB.Exec("DELETE FROM tokens WHERE token=$1", token)
+	return err
+}
+
+// DeleteExpiredTokens exclui todos os tokens expirados (chamado quando detectamos um token expirado)
+func (r *PostgresRepo) DeleteExpiredTokens() error {
+	_, err := r.DB.Exec("DELETE FROM tokens WHERE expires_at < NOW()")
+	return err
 }
 
 func (r *PostgresRepo) GetLinkByToken(token string) (domain.PublicLink, error) {

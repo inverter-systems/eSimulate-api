@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user',
+    role TEXT NOT NULL DEFAULT 'user', -- 'admin', 'user', 'company', 'specialist'
     provider TEXT DEFAULT 'email',
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS questions (
     subject_id UUID REFERENCES subjects(id) ON DELETE SET NULL,
     topic_id UUID REFERENCES topics(id) ON DELETE SET NULL,
     is_public BOOLEAN DEFAULT FALSE,
+    is_verified BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS exams (
     subjects JSONB,
     time_limit INT,
     is_public BOOLEAN DEFAULT FALSE,
+    -- is_verified removido: calculado no frontend baseado nas questões
     created_by UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -140,7 +142,25 @@ CREATE INDEX IF NOT EXISTS idx_results_user_date ON results(user_id, date DESC)
 CREATE INDEX IF NOT EXISTS idx_results_exam_date ON results(exam_id, date DESC);
 
 -- ============================================
--- 8. TABELA DE LINKS PÚBLICOS (PUBLIC_LINKS)
+-- 8. TABELA DE TOKENS DE VERIFICAÇÃO E RESET
+-- ============================================
+CREATE TABLE IF NOT EXISTS tokens (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    token TEXT UNIQUE NOT NULL,
+    type TEXT NOT NULL, -- 'verification' | 'password_reset'
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tokens_token ON tokens(token);
+CREATE INDEX IF NOT EXISTS idx_tokens_user_id ON tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_tokens_type ON tokens(type);
+CREATE INDEX IF NOT EXISTS idx_tokens_expires_at ON tokens(expires_at);
+
+-- ============================================
+-- 9. TABELA DE LINKS PÚBLICOS (PUBLIC_LINKS)
 -- ============================================
 CREATE TABLE IF NOT EXISTS public_links (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -171,12 +191,16 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+-- Drop se existir antes de criar (evita erro se já existir)
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
 CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_questions_updated_at ON questions;
 CREATE TRIGGER update_questions_updated_at BEFORE UPDATE ON questions
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_exams_updated_at ON exams;
 CREATE TRIGGER update_exams_updated_at BEFORE UPDATE ON exams
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

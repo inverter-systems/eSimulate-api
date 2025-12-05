@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Handler struct {
@@ -65,8 +66,23 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 		h.Error(w, 400, "Invalid JSON")
 		return
 	}
-	// TODO: Implementar lógica de recuperação de senha
-	// Gerar token temporário e enviar email
+	
+	// Buscar usuário por email
+	user, err := h.Service.Repo.GetUserByEmail(req.Email)
+	if err != nil {
+		// Por segurança, sempre retornar sucesso mesmo se usuário não existir
+		h.JSON(w, 200, map[string]string{"message": "Email enviado"})
+		return
+	}
+	
+	// Gerar token de reset
+	token := uuid.New().String()
+	expiresAt := time.Now().Add(1 * time.Hour) // Token válido por 1 hora
+	if err := h.Service.Repo.CreateToken(user.ID, token, "password_reset", expiresAt); err == nil {
+		// Enviar email (não bloquear se falhar)
+		go h.Service.EmailService.SendPasswordResetEmail(user.Email, user.Name, token)
+	}
+	
 	h.JSON(w, 200, map[string]string{"message": "Email enviado"})
 }
 
@@ -76,8 +92,49 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		h.Error(w, 400, "Invalid JSON")
 		return
 	}
-	// TODO: Implementar lógica de reset de senha
-	// Validar token e atualizar senha
+	
+	// Validar token
+	userID, tokenType, expiresAt, used, err := h.Service.Repo.GetToken(req.Token)
+	if err != nil {
+		h.Error(w, 400, "Token inválido")
+		return
+	}
+	
+	if tokenType != "password_reset" {
+		h.Error(w, 400, "Token inválido")
+		return
+	}
+	
+	if used {
+		h.Error(w, 400, "Token já foi utilizado")
+		return
+	}
+	
+	if time.Now().After(expiresAt) {
+		// Excluir token expirado automaticamente
+		h.Service.Repo.DeleteExpiredTokens()
+		h.Error(w, 400, "Token expirado")
+		return
+	}
+	
+	// Atualizar senha
+	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		h.Error(w, 500, "Erro ao processar senha")
+		return
+	}
+	
+	updates := map[string]interface{}{
+		"password": string(hashed),
+	}
+	if err := h.Service.Repo.UpdateUser(userID, updates); err != nil {
+		h.Error(w, 500, "Erro ao atualizar senha")
+		return
+	}
+	
+	// Marcar token como usado
+	h.Service.Repo.MarkTokenAsUsed(req.Token)
+	
 	h.JSON(w, 200, map[string]string{"message": "Senha alterada"})
 }
 
@@ -87,14 +144,54 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 		h.Error(w, 400, "Invalid JSON")
 		return
 	}
-	// TODO: Implementar lógica de verificação de email
-	// Validar token e atualizar is_verified
+	
+	// Validar token
+	userID, tokenType, expiresAt, used, err := h.Service.Repo.GetToken(req.Token)
+	if err != nil {
+		h.Error(w, 400, "Token inválido")
+		return
+	}
+	
+	if tokenType != "verification" {
+		h.Error(w, 400, "Token inválido")
+		return
+	}
+	
+	if used {
+		h.Error(w, 400, "Token já foi utilizado")
+		return
+	}
+	
+	if time.Now().After(expiresAt) {
+		// Excluir token expirado automaticamente
+		h.Service.Repo.DeleteExpiredTokens()
+		h.Error(w, 400, "Token expirado")
+		return
+	}
+	
+	// Atualizar is_verified
+	updates := map[string]interface{}{
+		"is_verified": true,
+	}
+	if err := h.Service.Repo.UpdateUser(userID, updates); err != nil {
+		h.Error(w, 500, "Erro ao verificar email")
+		return
+	}
+	
+	// Marcar token como usado
+	h.Service.Repo.MarkTokenAsUsed(req.Token)
+	
 	h.JSON(w, 200, map[string]string{"message": "Email verificado"})
 }
 
 func (h *Handler) GetExams(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value("userID").(string)
-	exams, err := h.Service.Repo.GetExamsByUser(userID)
+	
+	// Query params: ?public=true ou ?owner=me
+	publicOnly := r.URL.Query().Get("public") == "true"
+	ownerOnly := r.URL.Query().Get("owner") == "me"
+	
+	exams, err := h.Service.Repo.GetExamsByUser(userID, publicOnly, ownerOnly)
 	if err != nil { h.Error(w, 500, err.Error()); return }
 	h.JSON(w, 200, exams)
 }
@@ -121,13 +218,33 @@ func (h *Handler) CreateExam(w http.ResponseWriter, r *http.Request) {
 	var e domain.Exam
 	if err := json.NewDecoder(r.Body).Decode(&e); err != nil { h.Error(w, 400, "Bad JSON"); return }
 	
-	e.CreatedBy = r.Context().Value("userID").(string)
+	userID := r.Context().Value("userID").(string)
+	userRole := r.Context().Value("role").(string)
+	e.CreatedBy = userID
 	
 	// Verificar se é update (ID existe) ou create (ID vazio)
 	isUpdate := e.ID != ""
 	if !isUpdate {
 		e.ID = uuid.New().String()
 		e.CreatedAt = time.Now().UnixMilli()
+	} else {
+		// Se for update, buscar exame existente para validar regras
+		existingExam, err := h.Service.Repo.GetExamByID(e.ID)
+		if err == nil {
+			// Regra: Se isPublic estava true e está sendo alterado para false, só admin/specialist pode
+			if existingExam.IsPublic && !e.IsPublic && userRole != "admin" && userRole != "specialist" {
+				h.Error(w, 403, "Apenas admin ou specialist podem tornar provas públicas em privadas")
+				return
+			}
+		}
+	}
+	
+	// isVerified removido de Exam - será calculado no frontend baseado nas questões
+	// Validar isVerified das questões: só admin/specialist podem marcar questões como verificadas
+	for i := range e.Questions {
+		if e.Questions[i].IsVerified && userRole != "admin" && userRole != "specialist" {
+			e.Questions[i].IsVerified = false
+		}
 	}
 	
 	if err := h.Service.Repo.CreateExam(e); err != nil { h.Error(w, 500, err.Error()); return }
@@ -368,8 +485,89 @@ func (h *Handler) PublicSubmit(w http.ResponseWriter, r *http.Request) {
 		h.Error(w, 500, err.Error())
 		return 
 	}
-	h.JSON(w, 200, map[string]string{
+		h.JSON(w, 200, map[string]string{
 		"status":  "success",
 		"message": "Prova recebida.",
 	})
+}
+
+// --- Company Invite ---
+func (h *Handler) CompanyInvite(w http.ResponseWriter, r *http.Request) {
+	// Verificar se é role company
+	userRole, ok := r.Context().Value("role").(string)
+	if !ok || userRole != "company" {
+		h.Error(w, 403, "Apenas empresas podem enviar convites")
+		return
+	}
+	
+	var req struct {
+		Email     string `json:"email"`
+		LinkToken string `json:"linkToken"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.Error(w, 400, "Invalid JSON")
+		return
+	}
+	
+	// Validar link
+	link, err := h.Service.Repo.GetLinkByToken(req.LinkToken)
+	if err != nil || !link.Active {
+		h.Error(w, 404, "Link inválido ou inativo")
+		return
+	}
+	
+	// Buscar perfil da empresa
+	companyID := r.Context().Value("userID").(string)
+	company, err := h.Service.Repo.GetUserByID(companyID)
+	if err != nil {
+		h.Error(w, 500, "Erro ao buscar dados da empresa")
+		return
+	}
+	
+	// Extrair commercialName e companyLogo do profile
+	commercialName := "eSimulate Recruiter"
+	companyLogo := ""
+	if company.Profile != nil {
+		if profileMap, ok := company.Profile.(map[string]interface{}); ok {
+			if name, exists := profileMap["commercialName"]; exists {
+				if nameStr, ok := name.(string); ok && nameStr != "" {
+					commercialName = nameStr
+				}
+			}
+			if logo, exists := profileMap["companyLogo"]; exists {
+				if logoStr, ok := logo.(string); ok {
+					companyLogo = logoStr
+				}
+			}
+		}
+	}
+	
+	// Enviar email de convite
+	go h.Service.EmailService.SendCompanyInviteEmail(
+		req.Email,
+		"", // candidateName - pode ser extraído se necessário
+		commercialName,
+		companyLogo,
+		req.LinkToken,
+	)
+	
+	h.JSON(w, 200, map[string]string{"message": "Email enviado"})
+}
+
+// --- Contact Admin ---
+func (h *Handler) ContactAdmin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Subject     string `json:"subject"`
+		Message     string `json:"message"`
+		SenderEmail string `json:"senderEmail"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.Error(w, 400, "Invalid JSON")
+		return
+	}
+	
+	// Enviar email para admin
+	go h.Service.EmailService.SendContactAdminEmail(req.SenderEmail, req.Subject, req.Message)
+	
+	h.JSON(w, 200, map[string]string{"message": "Email enviado"})
 }
